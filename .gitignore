@@ -1,0 +1,16 @@
+# dependencies
+node_modules/
+
+# what the build writes
+gen/
+dist/
+
+# what the tests write
+tests/e2e/shots/
+tests/e2e/fixtures/fakehub/
+__pycache__/
+*.pyc
+
+# editors and systems
+.DS_Store
+*.swp

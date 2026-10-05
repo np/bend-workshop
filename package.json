@@ -1,0 +1,13 @@
+{
+  "name": "bend-workshop",
+  "private": true,
+  "description": "Bend 2 pocket workshop: Bend's checker and compilers in one HTML page",
+  "scripts": {
+    "build": "./build.sh --minify && node scripts/gen_examples.mjs && node scripts/build_html.mjs",
+    "test": "node tests/node/examples.mjs && node tests/node/guide.mjs && node tests/node/opcall.mjs && node tests/node/i18n.mjs",
+    "e2e": "python3 tests/e2e/run_all.py"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  }
+}

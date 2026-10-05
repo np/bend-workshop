@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<title>Bend 2 pocket workshop</title>
+<meta name="description" content="Write, check and run Bend 2 in the browser, with the JavaScript compiler built in.">
+<script>
+// The fonts come from Google Fonts unless the person turned that off in
+// Settings: it is the one request this page makes of its own. Off, nothing
+// is asked for and the system's own fonts are used.
+(function () {
+  var CSS = "https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap";
+  window.bendFonts = function (on) {
+    var ids = ["gf-pre1", "gf-pre2", "gf-css"];
+    ids.forEach(function (id) {
+      var n = document.getElementById(id);
+      if (n) {
+        n.remove();
+      }
+    });
+    if (!on) {
+      return;
+    }
+    var add = function (id, rel, href, cross) {
+      var l = document.createElement("link");
+      l.id = id;
+      l.rel = rel;
+      l.href = href;
+      if (cross) {
+        l.crossOrigin = "anonymous";
+      }
+      document.head.appendChild(l);
+    };
+    add("gf-pre1", "preconnect", "https://fonts.googleapis.com");
+    add("gf-pre2", "preconnect", "https://fonts.gstatic.com", true);
+    add("gf-css", "stylesheet", CSS);
+  };
+  var on = true;
+  try {
+    var m = JSON.parse(window.localStorage.getItem("bend-play:v2") || "null");
+    on = !(m && m.fonts === false);
+  } catch (e) {}
+  window.bendFonts(on);
+})();
+</script>
+<style>
+/*__STYLE__*/
+</style>
+</head>
+<body>
+<div id="app" class="panel-closed">
+  <header class="top">
+    <div class="brand">
+      <svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M11 2v3.5M11 16.5V20M11 5.5C11 8 5 8 5 11s6 3 6 5.5M11 5.5C11 8 17 8 17 11s-6 3-6 5.5"/>
+      </svg>
+      <b>bend</b>
+    </div>
+    <button class="proj" id="btn-proj" type="button" data-i18n-aria="projects">
+      <span id="proj-name"></span>
+      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 6l4.5 4.5L12.5 6"/></svg>
+    </button>
+    <button class="top-btn" id="btn-examples" type="button" data-i18n="examples"></button>
+    <button class="top-btn" id="btn-guide" type="button" data-i18n="guide"></button>
+    <button class="top-btn icon" id="btn-settings" type="button" data-i18n-aria="settings">
+      <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M3 5h6M13 5h2M3 13h2M9 13h6"/><circle cx="11" cy="5" r="2"/><circle cx="7" cy="13" r="2"/></svg>
+    </button>
+    <button class="top-btn icon" id="btn-about" type="button" data-i18n-aria="about">?</button>
+  </header>
+
+  <main>
+    <section class="edcol" data-i18n-aria="editor">
+      <div class="files" id="files" role="tablist" data-i18n-aria="files"></div>
+      <div class="ed" id="ed">
+        <pre class="ed-gutter" id="ed-gutter" aria-hidden="true"></pre>
+        <div class="ed-stack">
+          <div class="ed-mark" id="ed-mark" hidden></div>
+          <pre class="ed-marks" aria-hidden="true"><code id="ed-marks"></code></pre>
+          <pre class="ed-hl" aria-hidden="true"><code id="ed-hl"></code></pre>
+          <textarea class="ed-ta" id="ed-ta" data-i18n-aria="code_aria" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" wrap="off"></textarea>
+        </div>
+      </div>
+      <div class="sig" id="sig" aria-live="off" hidden></div>
+      <div class="goals" id="goals" hidden>
+        <button class="goals-head" id="goals-head" type="button" aria-expanded="true">
+          <span class="goals-q" aria-hidden="true">?</span>
+          <span id="goals-count"></span>
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 6l4.5 4.5L12.5 6"/></svg>
+        </button>
+        <div class="goals-list" id="goals-list"></div>
+      </div>
+      <div class="keys" id="keys" data-i18n-aria="keys_aria"></div>
+    </section>
+
+    <section class="panel" data-i18n-aria="results">
+      <div class="strip">
+        <button class="verdict" id="verdict" type="button" data-state="idle" aria-live="polite">
+          <span class="seal" id="seal" aria-hidden="true">·</span>
+          <span class="verdict-text" id="verdict-text"></span>
+        </button>
+        <button class="laws" id="laws" type="button" hidden></button>
+        <button class="act" id="check" type="button" data-i18n-aria="check">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5l3.2 3.2L13 4.8"/></svg>
+          <span class="lbl" data-i18n="check"></span>
+        </button>
+        <button class="act run" id="run" type="button">
+          <svg id="run-ico" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"></svg>
+          <span class="lbl" id="run-lbl"></span>
+        </button>
+        <button class="chev" id="chev" type="button" data-i18n-aria="toggle_panel" aria-expanded="false">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 6l4.5 4.5L12.5 6"/></svg>
+        </button>
+      </div>
+      <nav class="tabs" role="tablist" data-i18n-aria="panels">
+        <button class="tab" role="tab" type="button" data-tab="out" data-i18n="tab_out"></button>
+        <button class="tab" role="tab" type="button" data-tab="screen" data-i18n="tab_screen" hidden></button>
+        <button class="tab" role="tab" type="button" data-tab="js" data-i18n="tab_js"></button>
+        <button class="tab" role="tab" type="button" data-tab="guide" data-i18n="tab_guide"></button>
+        <button class="tab" role="tab" type="button" data-tab="base" data-i18n="tab_base"></button>
+        <button class="tab" role="tab" type="button" data-tab="agent" data-i18n="tab_agent" hidden></button>
+      </nav>
+      <div class="panes">
+        <div class="pane" id="pane-out">
+          <pre class="out"><span id="diag"></span><span id="log"></span></pre>
+          <div class="empty" id="out-hint" data-i18n-html="out_hint"></div>
+        </div>
+        <div class="pane" id="pane-screen" hidden>
+          <div class="bar">
+            <span class="grow" id="screen-info"></span>
+            <button class="chip" id="screen-close" type="button" data-i18n="screen_close" hidden></button>
+          </div>
+          <div class="screen-wrap">
+            <canvas id="screen" width="16" height="16" tabindex="0" data-i18n-aria="screen_aria"></canvas>
+          </div>
+          <div class="pad" id="pad" data-i18n-aria="pad_aria"></div>
+        </div>
+        <div class="pane" id="pane-agent" hidden></div>
+        <div class="pane" id="pane-js" hidden>
+          <div class="bar out-bar">
+            <div class="row out-targets" id="out-targets" role="group" data-i18n-aria="out_targets"></div>
+            <div class="row out-acts">
+              <span class="grow" id="js-info"></span>
+              <button class="chip" id="js-all" type="button" aria-pressed="false" data-i18n="js_all"></button>
+              <button class="chip" id="js-copy" type="button" data-i18n="copy"></button>
+              <button class="chip" id="js-save" type="button" data-i18n="out_save"></button>
+            </div>
+          </div>
+          <pre class="code" id="js-code"></pre>
+        </div>
+        <div class="pane" id="pane-guide" hidden><article class="guide" id="guide"></article></div>
+        <div class="pane" id="pane-base" hidden>
+          <div class="bar">
+            <input class="base-search" id="base-q" type="search" data-i18n-ph="base_ph" data-i18n-aria="base_aria" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false">
+          </div>
+          <div class="ns" id="base-ns"></div>
+          <div id="base-list"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div class="tip" id="tip" role="tooltip" hidden></div>
+
+<template id="guide-html">/*__GUIDE__*/</template>
+
+<template id="about-en">
+  <div class="about">
+    <p>A pocket workshop for <a href="https://bend-lang.com" target="_blank" rel="noopener">Bend 2</a>:
+    Bend's own checker and compilers (<code>bend.ts</code>, <code>comp.ts</code>, <code>safe.ts</code>,
+    version __VERSION__, commit <code>__COMMIT__</code>) run here, in the browser, with no server. Code
+    is checked as you type, compiled to JavaScript, and run in a worker.</p>
+    <p>The JavaScript lane runs on one core: parallel calls and <code>!</code> run in sequence. A
+    <code>Window</code> opens in the Screen tab, with keyboard, pointer, and an on-screen pad on a
+    phone. Audio, files and sockets are not available. A <code>.js</code> file in the workspace serves
+    as a foreign effect.</p>
+    <p>Every <code>?name</code> hole has a card under the editor: its context, then its goal, laid out
+    to fit. From a card: "Constructors" tries each term the goal's type is built with, and "Solve"
+    puts in the only one that fits; "Split" writes one match on the variables you tick; "Lemma" turns
+    the goal into a def of its own; a <code>#goal:</code> line shows the goal at that point of a
+    proof. The bar under the editor follows the caret: the signature of the call or the operator at
+    hand, and from it, going to a definition, splitting a typed def into a law and a def, or writing
+    operators as calls and back. Every one of these edits is checked before it is written.</p>
+    <p>The "Compiled" tab shows what <code>bend -o</code> would write for the open file: JavaScript, a
+    JS module, C, or BendTT, the input of <code>--verdict</code>'s kernel. It builds only the target
+    shown, only while the tab is open.</p>
+    <p>An assistant, set up in Settings as named profiles (Claude through claude.ai, a vendor's API,
+    or any OpenAI-shaped server, a local one included), can answer about a goal, an error or a
+    declaration. As an agent, it changes the project through tools: files can be locked, and a
+    session on chosen holes can only fill them. Each of its writes is checked at once; a snapshot
+    comes first, and one tap undoes the session. Its whole conversation can be followed, kept, and
+    exported.</p>
+    <p>Modules imported from the hub open as read-only tabs. The page keeps the hub's files it
+    fetched; where it cannot reach the hub (claude.ai's viewer), run the file once with the bend CLI
+    and import a zip of ~/.bend/lib.</p>
+    <p>Work is kept as projects, in this browser only, with snapshots to go back to, and exports as
+    a zip that <code>bend main.bend</code> runs once unzipped.</p>
+    <p>The verdict follows the CLI's: ALL PROOFS CHECK when no def relies on unsafe or foreign code.
+    <code>--verdict</code> rechecks a file with BendTT, a minimal kernel proven in Lean, which runs
+    only on a machine. There is a $10k bounty for a file that passes it yet proves Empty: see the
+    examples.</p>
+    <p>Privacy: no telemetry. The one request the page makes of its own is for its fonts, from Google
+    Fonts, which Settings turns off. Anything else goes out only when you ask for it.</p>
+    <p>The interface is in English, French or Portuguese (Settings); the guide is Bend's own, in
+    English.</p>
+    <p>Bend, its Base library, its guide and the demos used in the examples are © 2026
+    HigherOrderCO, under the Apache 2.0 license:
+    <a href="https://github.com/bendlang/bend" target="_blank" rel="noopener">github.com/bendlang/bend</a>.
+    This page is not an official Bend product.</p>
+  </div>
+</template>
+
+<template id="about-fr">
+  <div class="about">
+    <p>Un atelier de poche pour <a href="https://bend-lang.com" target="_blank" rel="noopener">Bend 2</a> :
+    le vérificateur et les compilateurs de Bend eux-mêmes (<code>bend.ts</code>, <code>comp.ts</code>,
+    <code>safe.ts</code>, version __VERSION__, commit <code>__COMMIT__</code>) tournent ici, dans le
+    navigateur, sans serveur. Le code est vérifié pendant la frappe, compilé vers JavaScript, et exécuté
+    dans un worker.</p>
+    <p>La cible JavaScript tourne sur un seul cœur : les appels parallèles et <code>!</code> s'exécutent
+    en séquence. Une <code>Window</code> s'ouvre dans l'onglet Écran, avec clavier, pointeur, et une
+    manette à l'écran sur téléphone. L'audio, les fichiers et les sockets ne sont pas disponibles. Un
+    fichier <code>.js</code> de l'espace de travail sert d'effet étranger.</p>
+    <p>Chaque trou <code>?nom</code> a sa carte sous l'éditeur : son contexte, puis son but, mis en forme
+    pour tenir en largeur. Depuis une carte : « Constructeurs » essaie chaque terme dont le type du but est
+    fait, et « Résoudre » met le seul qui convient ; « Découper » écrit un seul match sur les variables
+    cochées ; « Lemme » fait du but un def à part ; une ligne <code>#goal:</code> montre le but à ce point
+    d'une preuve. La barre sous l'éditeur suit le curseur : la signature de l'appel ou de l'opérateur en
+    cours, et de là, aller à une définition, séparer un def typé en loi et def, ou écrire des opérateurs
+    en appels et inversement. Chacune de ces modifications est vérifiée avant d'être écrite.</p>
+    <p>L'onglet « Compilé » montre ce que <code>bend -o</code> écrirait pour le fichier ouvert : JavaScript,
+    module JS, C, ou BendTT, l'entrée du noyau de <code>--verdict</code>. Il ne construit que la cible
+    affichée, et seulement onglet ouvert.</p>
+    <p>Un assistant, configuré dans Réglages sous forme de profils nommés (Claude via claude.ai, l'API
+    d'un fournisseur, ou tout serveur au format OpenAI, y compris local), répond sur un but, une erreur
+    ou une déclaration. En agent, il modifie le projet par des outils : des fichiers peuvent être
+    verrouillés, et une session sur des trous choisis ne peut que les remplir. Chacune de ses écritures
+    est vérifiée aussitôt ; un instantané est pris avant, et un geste annule la session. Toute sa
+    conversation se suit, se garde et s'exporte.</p>
+    <p>Les modules importés du hub s'ouvrent dans des onglets en lecture seule. La page garde les
+    fichiers du hub qu'elle a récupérés ; là où elle ne peut pas le joindre (le visualiseur de
+    claude.ai), exécutez le fichier une fois avec la commande bend et importez un zip de ~/.bend/lib.</p>
+    <p>Le travail est rangé en projets, dans ce navigateur uniquement, avec des instantanés pour revenir
+    en arrière, et s'exporte en un zip que <code>bend main.bend</code> exécute une fois décompressé.</p>
+    <p>Le verdict suit celui de la ligne de commande : ALL PROOFS CHECK quand aucun def ne dépend de code
+    unsafe ou étranger. <code>--verdict</code> revérifie un fichier avec BendTT, un noyau minimal prouvé
+    en Lean, qui ne tourne que sur une machine. Une prime de 10 k$ récompense un fichier qui le passe
+    tout en prouvant Empty : voir les exemples.</p>
+    <p>Confidentialité : pas de télémétrie. La seule requête que la page fait d'elle-même concerne ses
+    polices, chez Google Fonts, et Réglages permet de la couper. Tout le reste ne part que si vous le
+    demandez.</p>
+    <p>L'interface est en anglais, en français ou en portugais (Réglages) ; le guide est celui de Bend,
+    en anglais.</p>
+    <p>Bend, sa bibliothèque Base, son guide et les démos reprises dans les exemples sont © 2026
+    HigherOrderCO, sous licence Apache 2.0 :
+    <a href="https://github.com/bendlang/bend" target="_blank" rel="noopener">github.com/bendlang/bend</a>.
+    Cette page n'est pas un produit officiel de Bend.</p>
+  </div>
+</template>
+
+<template id="about-pt">
+  <div class="about">
+    <p>Uma oficina de bolso para o <a href="https://bend-lang.com" target="_blank" rel="noopener">Bend 2</a>:
+    o próprio verificador e os compiladores do Bend (<code>bend.ts</code>, <code>comp.ts</code>,
+    <code>safe.ts</code>, versão __VERSION__, commit <code>__COMMIT__</code>) rodam aqui, no navegador,
+    sem servidor. O código é verificado enquanto você digita, compilado para JavaScript e executado num
+    worker.</p>
+    <p>O alvo JavaScript roda num único núcleo: chamadas paralelas e <code>!</code> rodam em sequência. Uma
+    <code>Window</code> abre na aba Tela, com teclado, ponteiro e um controle na tela do celular. Áudio,
+    arquivos e sockets não estão disponíveis. Um arquivo <code>.js</code> do espaço de trabalho serve de
+    efeito externo.</p>
+    <p>Cada buraco <code>?nome</code> tem um cartão sob o editor: o seu contexto e depois o seu objetivo,
+    formatados para caber. A partir de um cartão: "Construtores" testa cada termo de que o tipo do
+    objetivo é feito, e "Resolver" coloca o único que serve; "Dividir" escreve um único match sobre as
+    variáveis marcadas; "Lema" transforma o objetivo num def próprio; uma linha <code>#goal:</code> mostra
+    o objetivo naquele ponto de uma prova. A barra sob o editor segue o cursor: a assinatura da chamada ou
+    do operador em questão, e a partir dela, ir para uma definição, separar um def tipado em lei e def, ou
+    escrever operadores como chamadas e vice-versa. Cada uma dessas edições é verificada antes de ser
+    escrita.</p>
+    <p>A aba "Compilado" mostra o que <code>bend -o</code> escreveria para o arquivo aberto: JavaScript,
+    módulo JS, C ou BendTT, a entrada do kernel do <code>--verdict</code>. Ela só compila o alvo exibido, e
+    só com a aba aberta.</p>
+    <p>Um assistente, configurado em Configurações como perfis nomeados (Claude pelo claude.ai, a API de
+    um provedor, ou qualquer servidor no formato OpenAI, inclusive local), responde sobre um objetivo, um
+    erro ou uma declaração. Como agente, ele altera o projeto por meio de ferramentas: arquivos podem ser
+    trancados, e uma sessão sobre buracos escolhidos só pode preenchê-los. Cada escrita dele é verificada
+    na hora; um instantâneo é tirado antes, e um toque desfaz a sessão. A conversa inteira pode ser
+    acompanhada, guardada e exportada.</p>
+    <p>Módulos importados do hub abrem em abas somente leitura. A página guarda os arquivos do hub que
+    buscou; onde não consegue alcançá-lo (o visualizador do claude.ai), rode o arquivo uma vez com a linha
+    de comando bend e importe um zip de ~/.bend/lib.</p>
+    <p>O trabalho fica guardado em projetos, só neste navegador, com instantâneos para voltar atrás, e é
+    exportado num zip que <code>bend main.bend</code> executa depois de descompactado.</p>
+    <p>O veredito segue o da linha de comando: ALL PROOFS CHECK quando nenhum def depende de código
+    inseguro ou externo. O <code>--verdict</code> verifica de novo um arquivo com o BendTT, um kernel
+    mínimo provado em Lean, que só roda numa máquina. Há um bounty de US$ 10 mil para um arquivo que passe
+    nele e mesmo assim prove Empty: veja os exemplos.</p>
+    <p>Privacidade: sem telemetria. A única requisição que a página faz por conta própria é a das suas
+    fontes, no Google Fonts, que pode ser desligada em Configurações. Todo o resto só sai quando você
+    pede.</p>
+    <p>A interface está em inglês, francês ou português (Configurações); o guia é o do próprio Bend, em
+    inglês.</p>
+    <p>O Bend, a sua biblioteca Base, o seu guia e as demos usadas nos exemplos são © 2026 HigherOrderCO,
+    sob a licença Apache 2.0:
+    <a href="https://github.com/bendlang/bend" target="_blank" rel="noopener">github.com/bendlang/bend</a>.
+    Esta página não é um produto oficial do Bend.</p>
+  </div>
+</template>
+
+<script type="application/json" id="bend-examples">/*__EXAMPLES__*/</script>
+<script>
+/*__I18N__*/
+</script>
+<script type="text/plain" id="bend-guide-md">/*__GUIDEMD__*/</script>
+<script type="text/plain" id="bend-prelude">/*__PRELUDE__*/</script>
+<script type="text/plain" id="bend-ceffs">/*__CEFFS__*/</script>
+<script type="text/plain" id="bend-tail">/*__RUNTAIL__*/</script>
+<script id="bend-core">/*__CORE__*/</script>
+<script>
+/*__APP__*/
+</script>
+</body>
+</html>

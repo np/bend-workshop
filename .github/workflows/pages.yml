@@ -1,0 +1,100 @@
+# Builds the workshop against the Bend commit pinned in BEND_COMMIT, runs the
+# Node tests, and publishes dist/index.html to GitHub Pages. Pull requests
+# are built and tested, not published.
+name: Pages
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      bend_ref:
+        description: "Bend commit, tag or branch to build against (empty: the one in BEND_COMMIT)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+# One publication at a time; a newer push cancels an older build.
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      # The build expects Bend at ../bend: both go side by side in the workspace.
+      - name: Check out the workshop
+        uses: actions/checkout@v7
+        with:
+          path: workshop
+          persist-credentials: false
+
+      - name: Pick the Bend commit
+        id: bend
+        env:
+          BEND_REF: ${{ inputs.bend_ref }}
+        run: |
+          ref="$BEND_REF"
+          if [ -z "$ref" ]; then ref="$(tr -d '[:space:]' < workshop/BEND_COMMIT)"; fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "Building against bendlang/bend $ref" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check out Bend
+        uses: actions/checkout@v7
+        with:
+          repository: bendlang/bend
+          ref: ${{ steps.bend.outputs.ref }}
+          path: bend
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: workshop/package-lock.json
+
+      - name: Install
+        working-directory: workshop
+        run: npm ci
+
+      - name: Build
+        working-directory: workshop
+        run: npm run build
+
+      - name: Test
+        working-directory: workshop
+        run: npm test
+
+      # Only the page: everything it needs is inlined in it.
+      - name: Assemble the site
+        run: |
+          mkdir -p site
+          cp workshop/dist/index.html site/index.html
+          ls -la site
+
+      - name: Upload the site
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
