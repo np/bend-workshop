@@ -17,7 +17,7 @@
     running: false, writing: false, paused: null, steps: 0, budget: 20, size: 20,
     log: [], ctl: null, queue: Promise.resolve(), mode: "project", holes: [], close: false,
     entry: "", task: "", before: null, done: false, last: "", raf: 0,
-    trace: [], t0: 0, wall: 0,
+    trace: [], t0: 0, wall: 0, notes: [], ended: "", note_draft: "",
   };
 
   // Everything said and done in a session, for whoever debugs it: what the
@@ -38,6 +38,10 @@
 
   function holes_in(text) {
     return [...new Set([...text.matchAll(/\?([A-Za-z_][\w.]*)/g)].map((m) => m[1]).filter((h) => h !== "TODO"))];
+  }
+
+  function hole_open(h) {
+    return state.files.some((f) => f.name.endsWith(".bend") && holes_in(f.text).includes(h));
   }
 
   function agent_ok() {
@@ -652,6 +656,17 @@
     return m ? m[1].toLowerCase() : "done";
   }
 
+  // Why the agent's turn ended, in its own last words, for the brief of a
+  // session taken up again. A stop or an error says so itself.
+  function agent_why(text) {
+    if (!agent.running) {
+      return;
+    }
+    const s = agent_status(text);
+    agent.ended = s === "blocked" ? "you said you were blocked"
+      : s === "continue" ? "you wanted to go on but called no tool" : "you said you were done";
+  }
+
   const AGENT_REF = ["Syntax Reference", "Laws and Proofs"];
 
   // What the agent is told: who it is, what it may do, the task, the
@@ -681,8 +696,16 @@
     const size = files.reduce((n, f) => n + f.text.length, 0);
     const room = compact ? 20000 : 80000;
     const parts = [rules.join("\n\n"),
-      "<task>\n" + agent.task + "\n</task>",
-      "<state>\nChecks start from " + agent.entry + ".\n" + JSON.stringify(tool_list(), null, 1) + "\n</state>"];
+      "<task>\n" + agent.task + "\n</task>"];
+    if (agent.ended !== "") {
+      // a session taken up again: why it stopped, and what the user says now
+      parts.push("<resumed>\nThis session stopped once (" + agent.ended + ") and the user took it up again."
+        + " The settings may have changed: the rules above are the ones that hold now."
+        + (agent.notes.length ? "\nThe user's instructions for going on, latest last:\n" + agent.notes.map((n) => "- " + n).join("\n") : "")
+        + "\n</resumed>");
+    }
+    parts.push(
+      "<state>\nChecks start from " + agent.entry + ".\n" + JSON.stringify(tool_list(), null, 1) + "\n</state>");
     if (size <= room) {
       parts.push("<files>\n" + files.map((f) => "<file path=\"" + f.name + "\">\n" + f.text + "\n</file>").join("\n") + "\n</files>");
     } else {
@@ -734,6 +757,7 @@
       say.text = got.text;
       agent.last = got.text;
       if (!agent.running || agent_status(got.text) !== "continue" || agent.steps === before) {
+        agent_why(got.text);
         return;
       }
       agent_log({ kind: "note", text: t("agent_again") });
@@ -814,13 +838,20 @@
     const msgs = [{ role: "user", content: brief.slice(cut, brief.indexOf("<bend_reference>")) }];
     while (agent.running) {
       const say = agent_log({ kind: "say", text: t("ai_thinking") });
-      const reply = await agent_round(cfg, sys, msgs, tools);
+      let reply;
+      try {
+        reply = await agent_round(cfg, sys, msgs, tools);
+      } catch (e) {
+        agent.log.splice(agent.log.indexOf(say), 1);
+        throw e;
+      }
       say.text = reply.text;
       if (!reply.text.trim()) {
         agent.log.splice(agent.log.indexOf(say), 1);
       }
       agent.last = reply.text || agent.last;
       if (reply.calls.length === 0) {
+        agent_why(reply.text);
         return;
       }
       msgs.push(reply.said);
@@ -834,42 +865,97 @@
     }
   }
 
+  // What a session can be started or taken up with: a usable profile, a
+  // .bend file to check from, holes for a hole session.
+  function agent_ready() {
+    const cfg = ai_cfg();
+    if (!agent_ok() || cfg === null) {
+      toast(t("agent_unavailable"));
+      return null;
+    }
+    if (!state.files.some((x) => x.name === agent.entry && x.name.endsWith(".bend"))) {
+      toast(t("no_bend"));
+      return null;
+    }
+    if (agent.mode === "holes" && agent.holes.length === 0) {
+      toast(t("agent_no_holes"));
+      return null;
+    }
+    return cfg;
+  }
+
+  // The settings as they stand, for the trace (at the start, and at each
+  // resumption, since they may have changed).
+  function agent_settings(cfg) {
+    return { mode: agent.mode, holes: agent.holes.slice(), close_goals: agent.close, entry: agent.entry,
+      locks: (state.locks || []).slice(), budget: agent.size, language: lang,
+      profile: { name: cfg.name, provider: cfg.provider, model: cfg.model || AI_PROVIDERS[cfg.provider].model || "",
+        url: cfg.provider === "custom" ? cfg.url : undefined },
+      tools: agent_tools().map((tl) => ({ name: tl.name, description: tl.description, schema: tl.schema })),
+      files: state.files.map((f) => ({ name: f.name, text: f.text })) };
+  }
+
+  function agent_size() {
+    agent.size = Math.max(1, Number(($("#agent-budget") || { value: agent.size }).value) || 20);
+  }
+
   async function agent_start() {
     if (agent.running) {
       return;
     }
-    const cfg = ai_cfg();
-    if (!agent_ok() || cfg === null) {
-      toast(t("agent_unavailable"));
-      return;
-    }
-    const f = state.files.find((x) => x.name === agent.entry && x.name.endsWith(".bend"));
-    if (!f) {
-      toast(t("no_bend"));
-      return;
-    }
-    if (agent.mode === "holes" && agent.holes.length === 0) {
-      toast(t("agent_no_holes"));
+    const cfg = agent_ready();
+    if (cfg === null) {
       return;
     }
     const task = ($("#agent-task") || { value: "" }).value.trim();
     agent.task = task || (agent.mode === "holes" ? t("agent_task_holes", agent.holes.map((h) => "?" + h).join(", "))
       : t("agent_task_default"));
-    agent.size = Math.max(1, Number(($("#agent-budget") || { value: 20 }).value) || 20);
-    Object.assign(agent, { running: true, done: false, steps: 0, budget: agent.size, log: [], last: "",
-      ctl: new AbortController(), queue: Promise.resolve(), before: work_snapshot(),
-      trace: [], t0: performance.now(), wall: Date.now() });
-    trace("session", { started: new Date(agent.wall).toISOString(), bend: Core.VERSION + " (" + Core.COMMIT + ")",
-      task: agent.task, mode: agent.mode, holes: agent.holes.slice(), close_goals: agent.close, entry: agent.entry,
-      locks: (state.locks || []).slice(), budget: agent.size, language: lang,
-      profile: { name: cfg.name, provider: cfg.provider, model: cfg.model || AI_PROVIDERS[cfg.provider].model || "",
-        url: cfg.provider === "custom" ? cfg.url : undefined },
-      tools: agent_tools().map((tl) => ({ name: tl.name, description: tl.description, schema: tl.schema })),
-      files: state.files.map((f) => ({ name: f.name, text: f.text })) });
+    agent_size();
+    Object.assign(agent, { done: false, steps: 0, log: [], last: "", notes: [], ended: "", note_draft: "",
+      before: work_snapshot(), proj: state.id, trace: [], t0: performance.now(), wall: Date.now() });
+    trace("session", Object.assign({ started: new Date(agent.wall).toISOString(), bend: Core.VERSION + " (" + Core.COMMIT + ")",
+      task: agent.task }, agent_settings(cfg)));
+    agent_log({ kind: "note", text: t("agent_started", cfg.name) });
+    await agent_go(cfg);
+  }
+
+  // Takes a session up again where it stopped (an error, a stop, the agent
+  // done or blocked), with settings the user may have changed and a word
+  // on what to do now. The journal, the trace and the snapshot of the start
+  // carry on: Undo still goes back to before the whole session. Each
+  // resumption starts from a fresh brief (the project as it stands, the
+  // journal, the user's words), with Claude as with an API: a conversation
+  // that broke, or grew too long, is not sent again.
+  async function agent_resume() {
+    if (agent.running || !agent.done) {
+      return;
+    }
+    agent.holes = agent.holes.filter(hole_open);
+    const cfg = agent_ready();
+    if (cfg === null) {
+      return;
+    }
+    const note = ($("#agent-note") || { value: "" }).value.trim();
+    if (note !== "") {
+      agent.notes.push(note);
+    }
+    agent.note_draft = "";
+    agent_size();
+    agent.done = false;
+    trace("resume", Object.assign({ note, ended: agent.ended }, agent_settings(cfg)));
+    agent_log({ kind: "note", text: t("agent_resumed", cfg.name) });
+    if (note !== "") {
+      agent_log({ kind: "note", text: "» " + note });
+    }
+    await agent_go(cfg);
+  }
+
+  // One leg of a session, from the start or from a resumption, to its end.
+  async function agent_go(cfg) {
+    Object.assign(agent, { running: true, budget: agent.steps + agent.size, ctl: new AbortController(), queue: Promise.resolve() });
     snap_take("snap_agent", true);
     ed.ta.readOnly = true;
     document.body.classList.add("agent-busy");
-    agent_log({ kind: "note", text: t("agent_started", cfg.name) });
     agent_paint();
     try {
       if (cfg.provider === "claude") {
@@ -880,6 +966,7 @@
     } catch (e) {
       if (!(e && e.code === "cancelled")) {
         agent_log({ kind: "err", text: ai_error(e) });
+        agent.ended = "an error ended it: " + String(ai_error(e)).slice(0, 300);
       }
       trace("error", { code: e && e.code, message: (e && e.message) || String(e) });
     } finally {
@@ -889,14 +976,20 @@
       }
       ed.ta.readOnly = view.hub !== null;
       document.body.classList.remove("agent-busy");
+      if (agent.ended === "") {
+        agent.ended = "it ended without a word";
+      }
       const r = await comp_ask(agent.entry, false);
       agent_log({ kind: "verdict", ok: !!r.ok && !/^SOME/.test(r.text), open: !!r.open,
         text: r.ok ? r.text.split("\n")[0] : r.open ? open_brief(r) : err_brief(r) });
       trace("end", { steps: agent.steps, verdict: r.text, files: state.files.map((f) => ({ name: f.name, text: f.text })) });
+      // the same record as the session goes on: one session, one entry
       ses_put({ id: agent.wall, started: new Date(agent.wall).toISOString(), task: agent.task, mode: agent.mode,
         profile: cfg.name, entry: agent.entry, steps: agent.steps, ok: !!r.ok && !/^SOME/.test(r.text),
         open: !!r.open, verdict: r.ok ? r.text.split("\n")[0] : r.open ? open_brief(r) : err_brief(r),
-        trace: agent.trace, log: agent.log });
+        trace: agent.trace, log: agent.log,
+        resume: { proj: agent.proj, before: agent.before, holes: agent.holes, close: agent.close, size: agent.size,
+          notes: agent.notes, ended: agent.ended, last: agent.last } });
       agent.done = true;
       agent_paint();
       live_soon();
@@ -907,12 +1000,28 @@
     }
   }
 
+  // A past session of the open project, taken up again: it becomes the
+  // session in the tab, ready for Continue.
+  function ses_take(r) {
+    const k = r.resume;
+    const last = r.trace.length ? r.trace[r.trace.length - 1].t : 0;
+    Object.assign(agent, { mode: r.mode, entry: r.entry, task: r.task, steps: r.steps, log: r.log, trace: r.trace,
+      wall: r.id, t0: performance.now() - last - 1000, before: k.before, proj: k.proj, holes: k.holes.slice(),
+      close: k.close, size: k.size, notes: k.notes.slice(), ended: k.ended, last: k.last, done: true, note_draft: "" });
+    ses.view = null;
+    conv.key = "";
+    agent_paint();
+  }
+
   function agent_stop() {
     if (agent.paused) {
       agent.paused(false);
     }
     if (agent.ctl) {
       agent.ctl.abort();
+    }
+    if (agent.running) {
+      agent.ended = "the user stopped it";
     }
     agent.running = false;
     agent_log({ kind: "note", text: t("agent_stopped") });
@@ -1006,6 +1115,16 @@
           out.push("### " + f.name, "", fence(f.text, f.name.endsWith(".js") ? "js" : "python"), "");
         }
         out.push("## Conversation", "");
+      } else if (e.type === "resume") {
+        out.push("## Resumed, " + at, "",
+          "- The previous leg ended: " + e.ended,
+          "- Profile " + e.profile.name + " (" + e.profile.provider + (e.profile.model ? ", " + e.profile.model : "") + ")",
+          "- Mode: " + e.mode + (e.mode === "holes" ? " " + e.holes.map((h) => "?" + h).join(", ") + (e.close_goals ? ", each fill must close its goal" : ", sub-holes allowed") : "")
+            + "; checked from " + e.entry + "; locked: " + (e.locks.length ? e.locks.join(", ") : "none") + "; steps before pausing: " + e.budget,
+          "", "### Instructions for going on", "", e.note || "(none)", "", "### Tools offered", "", json(e.tools), "", "### Files at the resumption", "");
+        for (const f of e.files) {
+          out.push("#### " + f.name, "", fence(f.text, f.name.endsWith(".js") ? "js" : "python"), "");
+        }
       } else if (e.type === "claude_call") {
         out.push("### Call " + e.leg + " to Claude (" + e.model_tier + "), " + at, "", "Prompt:", "", fence(e.prompt, "text"), "");
       } else if (e.type === "claude_reply") {
@@ -1221,6 +1340,13 @@
             budget: e.budget, bend: e.bend, profile: e.profile })),
           fold(t("conv_files", e.files.length), () => cv_pre(e.files.map((f) => "── " + f.name + "\n" + f.text).join("\n\n"))),
           fold(t("conv_tools", e.tools.length), () => cv_pre(e.tools)));
+      case "resume":
+        return row("note", t("conv_resume", e.profile.name, t("agent_mode_" + e.mode).toLowerCase(), e.entry),
+          e.note ? cv_pre(e.note) : null,
+          fold(t("conv_settings"), () => cv_pre({ ended: e.ended, holes: e.holes, close_goals: e.close_goals, locks: e.locks,
+            budget: e.budget, profile: e.profile })),
+          fold(t("conv_files", e.files.length), () => cv_pre(e.files.map((f) => "── " + f.name + "\n" + f.text).join("\n\n"))),
+          fold(t("conv_tools", e.tools.length), () => cv_pre(e.tools)));
       case "claude_call":
         return row("out", t("conv_claude_call", e.leg, e.model_tier),
           fold(t("conv_prompt", size(e.prompt)), () => cv_pre(e.prompt)));
@@ -1339,17 +1465,16 @@
         el("button", { class: "chip", type: "button", text: ".md", "aria-label": t("agent_export") + " (.md)",
           onclick: () => agent_export("md", trace, past ? past.id : agent.wall) })));
     }
+    if (agent.done && agent.before !== null && !past) {
+      // a session that ended can be taken up again, its settings refined
+      box.append(agent_form(agent.note_draft, true));
+    }
+    if (past && past.resume && past.resume.proj === state.id && !agent.running) {
+      box.append(el("div", { class: "row agent-end" },
+        el("button", { class: "btn primary", type: "button", text: t("ses_resume"), onclick: () => ses_take(past) })));
+    }
     if (!agent.running && !past) {
       box.append(ses_list());
-    }
-    if (agent.done && agent.before !== null && !past) {
-      box.append(el("div", { class: "row agent-end" },
-        el("button", { class: "btn", type: "button", text: t("agent_undo"), onclick: agent_undo }),
-        el("button", { class: "btn", type: "button", text: t("agent_new"), onclick: () => {
-          agent.done = false;
-          agent.log = [];
-          agent_paint();
-        } })));
     }
     pane.append(box);
     if (agent.running && atBottom) {
@@ -1357,13 +1482,26 @@
     }
   }
 
-  function agent_form(task) {
-    const form = el("div", { class: "form agent-form" });
-    const area = el("textarea", { id: "agent-task", class: "ai-req", rows: "3", spellcheck: "true",
-      placeholder: agent.mode === "holes" ? t("agent_task_holes", agent.holes.map((h) => "?" + h).join(", ")) : t("agent_task_default") });
+  // The settings of a new session, or (resume) of one taken up again: then
+  // the text is what to do now, the task itself staying as it was.
+  function agent_form(task, resume) {
+    const form = el("div", { class: "form agent-form" + (resume ? " agent-resume" : "") });
+    const area = el("textarea", { id: resume ? "agent-note" : "agent-task", class: "ai-req", rows: "3", spellcheck: "true",
+      placeholder: resume ? t("agent_note_ph")
+        : agent.mode === "holes" ? t("agent_task_holes", agent.holes.map((h) => "?" + h).join(", ")) : t("agent_task_default") });
     area.value = task;
-    area.addEventListener("input", () => { agent.draft = area.value; });
-    form.append(el("label", {}, t("agent_task"), area));
+    area.addEventListener("input", () => {
+      if (resume) {
+        agent.note_draft = area.value;
+      } else {
+        agent.draft = area.value;
+      }
+    });
+    if (resume) {
+      form.append(el("h3", { class: "agent-resume-title", text: t("agent_resume_title") }),
+        el("small", { text: t("agent_resume_hint") }));
+    }
+    form.append(el("label", {}, t(resume ? "agent_note" : "agent_task"), area));
     // what it may change
     const modes = el("div", { class: "row" });
     for (const m of ["project", "holes"]) {
@@ -1379,7 +1517,7 @@
     }
     form.append(el("div", { class: "field" }, el("span", { text: t("agent_mode") }), modes));
     if (agent.mode === "holes") {
-      const known = [...new Set(goals.cards.filter((c) => !c.gone).map((c) => c.name).concat(agent.holes))];
+      const known = [...new Set(goals.cards.filter((c) => !c.gone).map((c) => c.name).concat(agent.holes))].filter(hole_open);
       const list = el("div", { class: "row agent-holes" });
       if (known.length === 0) {
         list.append(el("small", { text: t("agent_no_holes") }));
@@ -1442,7 +1580,16 @@
       el("label", {}, t("agent_entry"), entry),
       el("label", {}, t("ai_profile"), prof),
       el("label", {}, t("agent_budget"), budget)),
-      el("div", { class: "row" }, el("button", { class: "btn primary", type: "button", text: t("agent_start"), onclick: agent_start })));
+      resume
+        ? el("div", { class: "row agent-end" },
+          el("button", { class: "btn primary", type: "button", text: t("agent_resume"), onclick: agent_resume }),
+          el("button", { class: "btn", type: "button", text: t("agent_undo"), onclick: agent_undo }),
+          el("button", { class: "btn", type: "button", text: t("agent_new"), onclick: () => {
+            agent.done = false;
+            agent.log = [];
+            agent_paint();
+          } }))
+        : el("div", { class: "row" }, el("button", { class: "btn primary", type: "button", text: t("agent_start"), onclick: agent_start })));
     return form;
   }
 

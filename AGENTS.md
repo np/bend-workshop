@@ -415,6 +415,23 @@ type), the goal after `⊢`, and a toolbar.
   session* restores the snapshot. Agent writes go straight to the text, not
   through the browser's undo stack, so no keyboard opens on a phone; the
   snapshot stands for undo.
+- **Taking a session up again.** A session that ended (an error, a stop,
+  the agent done or blocked, the API out of breath) can be continued from
+  the tab: under its journal, the same settings as a new session (what it
+  may change, holes, the close option, locks, the file checked from, the
+  profile, the budget), all of them changeable, and instead of the task a
+  note on what to do now. *Continue the session* starts a new leg: the
+  journal, the trace and the snapshot of the start carry on (Undo still goes
+  back to before the whole session; a snapshot is also taken at each leg),
+  and steps keep counting. Each leg starts from a fresh brief, with Claude
+  as with an API: the rules as they stand now, the task, a `<resumed>`
+  section saying why the last leg ended and listing the user's notes, then
+  the project and the journal. A conversation that broke or grew too long
+  is not sent again, and the profile may change provider. The trace records
+  a `resume` event with the settings, the note and the files. A past session
+  of the open project (its record keeps the snapshot and the settings) can
+  be taken up again too, after a reload: *Continue this session* makes it
+  the tab's session.
 - **Journal.** It shows the agent's text, each tool call with its target,
   ✓/✗ and the verdict after it, the diff of each write, and the output of each
   run or eval.
@@ -437,7 +454,7 @@ type), the goal after `⊢`, and a toolbar.
   with its cache reads; OpenAI). Claude in the viewer reports no tokens.
 - **Past sessions.** Each session, finished or stopped, is kept with its trace
   and journal in IndexedDB (database `bend-workshop`, store `sessions`), the
-  last 20. The Agent tab lists them; one can be read again (journal or
+  last 20. A continued session overwrites its own record. The Agent tab lists them; one can be read again (journal or
   conversation), exported, or deleted. Without IndexedDB, nothing is kept and
   nothing breaks.
 
@@ -496,7 +513,9 @@ type), the goal after `⊢`, and a toolbar.
   Anthropic and OpenAI servers), `agent_no_worker`, `agent_holes_export`
   (`list_holes`, exports, no key), `agent_tools` (`list_symbols`,
   `signature`), `agent_trace` (the live conversation, tokens, past sessions
-  across a reload).
+  across a reload), `agent_resume` (a session ended by an API error,
+  continued with other settings and a note, then taken up again from the
+  past sessions after a reload).
 - **Simulating the environment.** `serve.py` takes a CSP to imitate the viewer.
   `?probe_ms=1` forces the deferred Constructors state. `frame_page()` puts a
   sandboxed iframe in front of the page: an opaque origin with no storage.

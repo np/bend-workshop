@@ -689,6 +689,8 @@ button.goal-name { text-decoration: underline; text-underline-offset: 3px; }
 .ag-diff .add { color: var(--proof); background: var(--proof-bg); }
 .ag-why { color: var(--fail); margin-top: 3px; white-space: pre-wrap; }
 .agent-end { margin-top: 12px; }
+.agent-resume { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.agent-resume-title { margin: 0; font-size: 15px; }
 .agent-export { margin-top: 10px; align-items: center; font-size: 12.5px; }
 .agent-export .dim { color: var(--muted); }
 .agent-busy .ed-ta { cursor: not-allowed; }
