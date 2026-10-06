@@ -449,7 +449,23 @@ type), the goal after `⊢`, and a toolbar.
   and "Conversation" the trace itself, live: each event with its time, the
   long parts (prompts, system, files, raw responses, long results) folded and
   built only when opened. Events are appended as they come, so open folds stay
-  open. A count heads both: model calls, characters sent and received,
+  open. What a session carries is shown for what it is, not as JSON:
+  - *Files* (at the start, at a resumption, at the end, in a brief): one fold
+    per file with its line count, the code highlighted as in the editor and
+    its lines numbered; against the files at the start, each is marked new
+    or changed, and a changed one opens on its diff, the whole file a fold
+    further.
+  - *Tools*: one fold per tool, its signature as the summary (`name(a, b?)`),
+    then its description and a table of its parameters; at a resumption, the
+    tools that came and went (`+edit_file`, `−create_file`).
+  - *Briefs* (a Claude prompt, a system prompt, the first message): split
+    into their sections, the task, the resumption and "so far" shown, the
+    rules, the project state, the files and the reference folded.
+  - *Messages*: cards by role (page, model, tool), with their text, each tool
+    call as its fields (code fields as code) and each tool answer with its
+    verdict as a badge. In a request, what the page sends back (the model's
+    last reply, the tools' answers) folds, since it was shown already; the
+    raw JSON stays one fold away. A count heads both: model calls, characters sent and received,
   duration, and tokens in and out when the API reports `usage` (Anthropic,
   with its cache reads; OpenAI). Claude in the viewer reports no tokens.
 - **Past sessions.** Each session, finished or stopped, is kept with its trace

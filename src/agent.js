@@ -1256,7 +1256,7 @@
   // The trace as it happened, every message whole, the long ones folded;
   // appended to as the session goes, so folds opened stay open.
 
-  const conv = { el: null, key: "", n: 0 };
+  const conv = { el: null, key: "", n: 0, ids: {}, start: null, tools: null };
 
   function kb(n) {
     return (n / 1024).toFixed(1).replace(".", t("decimal")) + " " + t("kb");
@@ -1299,6 +1299,9 @@
       conv.el = el("div", { class: "conv" });
       conv.key = key;
       conv.n = 0;
+      conv.ids = {};
+      conv.start = null;
+      conv.tools = null;
     }
     for (; conv.n < trace.length; conv.n++) {
       conv.el.append(conv_event(trace[conv.n]));
@@ -1328,52 +1331,316 @@
     return el("pre", { class: "cv-pre", text: typeof text === "string" ? text : JSON.stringify(text, null, 1) });
   }
 
+  // Long text folded, short text shown.
+  function cv_text(text, label) {
+    const s = String(text);
+    return s.length > 600 ? fold(label || t("conv_result_size", kb(s.length)), () => cv_pre(s)) : cv_pre(s);
+  }
+
+  // Code as the editor shows it: highlighted, its lines numbered.
+  function cv_code(text, name) {
+    const src = String(text);
+    const html = /\.(js|mjs)$/.test(name || "") ? highlight_js(src) : /\.bend$|^bend$/.test(name || "") ? highlight(src) : esc(src);
+    const n = src.split("\n").length;
+    return el("div", { class: "cv-code" },
+      el("pre", { class: "cv-gut", "aria-hidden": "true", text: Array.from({ length: n }, (_, i) => i + 1).join("\n") }),
+      el("pre", { class: "cv-src", html }));
+  }
+
+  function cv_badge(kind, text) {
+    return el("span", { class: "cv-badge " + kind, text });
+  }
+
+  // The lines that differ between two texts, as one hunk, as the journal
+  // shows a write.
+  function cv_diff(a, b) {
+    const x = a.split("\n");
+    const y = b.split("\n");
+    let i = 0;
+    while (i < x.length && i < y.length && x[i] === y[i]) {
+      i++;
+    }
+    let j = 0;
+    while (j < x.length - i && j < y.length - i && x[x.length - 1 - j] === y[y.length - 1 - j]) {
+      j++;
+    }
+    const box = el("pre", { class: "ag-diff cv-diff" }, el("div", { class: "cv-hunk", text: "@@ " + t("conv_line", i + 1) }));
+    for (const l of x.slice(i, x.length - j).slice(0, 400)) {
+      box.append(el("div", { class: "del", text: "- " + l }));
+    }
+    for (const l of y.slice(i, y.length - j).slice(0, 400)) {
+      box.append(el("div", { class: "add", text: "+ " + l }));
+    }
+    return box;
+  }
+
+  // The project's files, one fold each; against base (the files at the
+  // start), each says whether it is new or changed, and how.
+  function cv_files(files, base) {
+    const was = base ? new Map(base.map((f) => [f.name, f.text])) : null;
+    const changed = was ? files.filter((f) => was.get(f.name) !== f.text).length : 0;
+    return fold(t("conv_files", files.length) + (changed ? " · " + t("conv_n_changed", changed) : ""), () => {
+      const list = el("div", { class: "cv-list" });
+      for (const f of files) {
+        const old = was ? was.get(f.name) : undefined;
+        const state = !was ? "" : old === undefined ? "new" : old === f.text ? "" : "changed";
+        const head = el("span", {}, el("span", { class: "cv-name", text: f.name }), " ",
+          el("span", { class: "dim", text: t("conv_lines", f.text.split("\n").length) }),
+          state ? cv_badge(state, t("conv_" + state)) : null);
+        const d = el("details", { class: "cv-fold cv-file" }, el("summary", {}, head));
+        let filled = false;
+        d.addEventListener("toggle", () => {
+          if (d.open && !filled) {
+            filled = true;
+            if (state === "changed") {
+              d.append(cv_diff(old, f.text), fold(t("conv_whole"), () => cv_code(f.text, f.name)));
+            } else {
+              d.append(cv_code(f.text, f.name));
+            }
+          }
+        });
+        list.append(d);
+      }
+      return list;
+    });
+  }
+
+  // The tools offered, one fold each: what it does, what it takes. Against
+  // the tools of before (a resumption), what came and went.
+  function cv_tools(tools, prev) {
+    const names = tools.map((x) => x.name);
+    const had = prev ? prev.map((x) => x.name) : names;
+    const add = names.filter((n) => !had.includes(n));
+    const gone = had.filter((n) => !names.includes(n));
+    const delta = (add.length ? " · +" + add.join(", +") : "") + (gone.length ? " · −" + gone.join(", −") : "");
+    return fold(t("conv_tools", tools.length) + delta, () => {
+      const list = el("div", { class: "cv-list" });
+      for (const tl of tools) {
+        const sc = tl.schema || tl.input_schema || (tl.function && tl.function.parameters) || {};
+        const name = tl.name || (tl.function && tl.function.name);
+        const desc = tl.description || (tl.function && tl.function.description) || "";
+        const props = Object.entries(sc.properties || {});
+        const req = sc.required || [];
+        const sig = name + "(" + props.map(([k]) => k + (req.includes(k) ? "" : "?")).join(", ") + ")";
+        list.append(fold(sig, () => {
+          const body = el("div", { class: "cv-tool-doc" }, el("p", { text: desc }));
+          if (props.length) {
+            const tb = el("table", { class: "cv-params" });
+            for (const [k, v] of props) {
+              tb.append(el("tr", {}, el("td", { class: "cv-name", text: k }),
+                el("td", { class: "dim", text: (v.type || "") + (v.items ? "<" + v.items.type + ">" : "") }),
+                el("td", { text: req.includes(k) ? t("conv_required") : t("conv_optional") })));
+            }
+            body.append(tb);
+          } else {
+            body.append(el("small", { class: "dim", text: t("conv_no_params") }));
+          }
+          return body;
+        }));
+      }
+      return list;
+    });
+  }
+
+  // A brief, split into its sections: the rules, the task, the project
+  // (its files one by one), what was done so far, the reference.
+  const BRIEF_OPEN = new Set(["task", "resumed", "so_far"]);
+
+  function cv_brief(text) {
+    const box = el("div", { class: "cv-brief" });
+    const re = /<(task|resumed|state|files|so_far|bend_reference)>\n?([\s\S]*?)\n?<\/\1>/g;
+    let at = 0;
+    const loose = (s) => {
+      if (s.trim()) {
+        box.append(fold(t("conv_sec_rules") + ", " + kb(s.length), () => cv_pre(s.trim())));
+      }
+    };
+    for (let m = re.exec(text); m !== null; m = re.exec(text)) {
+      loose(text.slice(at, m.index));
+      at = m.index + m[0].length;
+      const tag = m[1];
+      const body = m[2];
+      const title = t("conv_sec_" + tag);
+      if (tag === "files") {
+        const files = [...body.matchAll(/<file path="([^"]*)">\n?([\s\S]*?)\n?<\/file>/g)].map((x) => ({ name: x[1], text: x[2] }));
+        box.append(cv_files(files, null));
+      } else if (BRIEF_OPEN.has(tag)) {
+        box.append(el("div", { class: "cv-sec" }, el("div", { class: "cv-sec-head", text: title }), cv_pre(body)));
+      } else {
+        box.append(fold(title + ", " + kb(body.length), () => {
+          const json = body.indexOf("{");
+          if (tag === "state" && json >= 0) {
+            try {
+              return el("div", {}, cv_pre(body.slice(0, json).trim()), cv_pre(JSON.parse(body.slice(json))));
+            } catch (e) {
+              return cv_pre(body);
+            }
+          }
+          return cv_pre(body);
+        }));
+      }
+    }
+    loose(text.slice(at));
+    return box;
+  }
+
+  // A tool's input, field by field; code shown as code.
+  const CODE_KEYS = new Set(["code", "text", "new_text", "old_text", "expr"]);
+
+  function cv_input(input) {
+    const box = el("div", { class: "cv-kv" });
+    const lang = /\.js$/.test(String(input.path || input.file || "")) ? "x.js" : "bend";
+    for (const [k, v] of Object.entries(input || {})) {
+      const code = typeof v === "string" && (CODE_KEYS.has(k) || v.includes("\n"));
+      box.append(el("div", { class: "cv-k", text: k }),
+        code ? cv_code(v, lang) : el("div", { class: "cv-v", text: typeof v === "string" ? v : JSON.stringify(v) }));
+    }
+    return Object.keys(input || {}).length ? box : el("small", { class: "dim", text: t("conv_no_input") });
+  }
+
+  function cv_call(name, input) {
+    return el("div", { class: "cv-call" }, el("div", { class: "cv-call-head", text: "⚙ " + name }), cv_input(input));
+  }
+
+  // A tool's answer: its verdict up front when it carries one.
+  function cv_result(text, ok, name) {
+    let obj = null;
+    try {
+      obj = JSON.parse(text);
+    } catch (e) {
+      obj = null;
+    }
+    const v = obj && typeof obj === "object" ? obj.verdict || (obj.check && obj.check.verdict) : null;
+    const head = el("div", { class: "cv-call-head" }, name ? "↳ " + name + " " : "",
+      ok ? null : cv_badge("bad", t("conv_failed")),
+      v ? cv_badge(/^ALL|^PASS/.test(v) ? "ok" : /goal/.test(v) ? "goal" : "bad", v) : null);
+    const s = obj && typeof obj === "object" ? JSON.stringify(obj, null, 1) : String(text);
+    return el("div", { class: "cv-result" + (ok ? "" : " err") }, head, cv_text(s));
+  }
+
+  // Messages as cards: who speaks, what is said, the tools called and
+  // their answers. Anthropic's blocks and OpenAI's messages alike.
+  // In a request, the model's own replies are sent back as they came: they
+  // were shown with the response, so here they fold (echo).
+  function cv_msgs(msgs, echo) {
+    const list = el("div", { class: "cv-list" });
+    for (const m of msgs) {
+      if (echo && m.role === "assistant") {
+        list.append(fold(t("conv_echo"), () => cv_msgs([m], false)));
+        continue;
+      }
+      const card = el("div", { class: "cv-msg " + m.role }, el("div", { class: "cv-role", text: t("conv_role_" + m.role) }));
+      // a tool's answer sent back was shown at its step: folded here
+      const answer = (text, ok, name) => {
+        if (!echo) {
+          return cv_result(text, ok, name);
+        }
+        let v = "";
+        try {
+          const o = JSON.parse(text);
+          v = (o && (o.verdict || (o.check && o.check.verdict))) || "";
+        } catch (e) {
+          v = "";
+        }
+        return fold(t("conv_echo_result", name || "?", ok ? v : t("conv_failed")), () => cv_result(text, ok, name));
+      };
+      const said = (s) => {
+        if (/<task>|<bend_reference>/.test(s)) {
+          card.append(cv_brief(s));
+        } else if (s.trim()) {
+          card.append(cv_text(s));
+        }
+      };
+      if (m.role === "tool") {
+        card.append(answer(String(m.content), !/^Error: /.test(String(m.content)), conv.ids[m.tool_call_id]));
+      } else if (typeof m.content === "string") {
+        said(m.content);
+      } else {
+        for (const b of m.content || []) {
+          if (b.type === "text") {
+            said(b.text);
+          } else if (b.type === "tool_use") {
+            conv.ids[b.id] = b.name;
+            card.append(cv_call(b.name, b.input));
+          } else if (b.type === "tool_result") {
+            card.append(answer(typeof b.content === "string" ? b.content : JSON.stringify(b.content), !b.is_error, conv.ids[b.tool_use_id]));
+          } else {
+            card.append(cv_pre(b));
+          }
+        }
+      }
+      for (const c of m.tool_calls || []) {
+        const fn = c.function || {};
+        conv.ids[c.id] = fn.name;
+        let input = fn.arguments;
+        try {
+          input = typeof input === "string" ? JSON.parse(input || "{}") : input || {};
+        } catch (e) {
+          input = { arguments: String(fn.arguments) };
+        }
+        card.append(cv_call(fn.name, input));
+      }
+      list.append(card);
+    }
+    return list;
+  }
+
   function conv_event(e) {
     const at = "+" + (e.t / 1000).toFixed(1).replace(".", t("decimal")) + " s";
     const row = (cls, head, ...kids) => el("div", { class: "cv " + cls }, el("div", { class: "cv-head" },
       el("span", { class: "cv-at", text: at }), " ", head), ...kids);
     const size = (x) => kb((typeof x === "string" ? x : JSON.stringify(x)).length);
+    const raw = (x) => fold(t("conv_raw", size(x)), () => cv_pre(x));
     switch (e.type) {
-      case "session":
+      case "session": {
+        conv.start = e.files;
+        conv.tools = e.tools;
         return row("note", t("conv_session", e.profile.name, t("agent_mode_" + e.mode).toLowerCase(), e.entry),
-          fold(t("conv_settings"), () => cv_pre({ task: e.task, holes: e.holes, close_goals: e.close_goals, locks: e.locks,
+          el("div", { class: "cv-sec" }, el("div", { class: "cv-sec-head", text: t("conv_sec_task") }), cv_pre(e.task)),
+          fold(t("conv_settings"), () => cv_pre({ holes: e.holes, close_goals: e.close_goals, locks: e.locks,
             budget: e.budget, bend: e.bend, profile: e.profile })),
-          fold(t("conv_files", e.files.length), () => cv_pre(e.files.map((f) => "── " + f.name + "\n" + f.text).join("\n\n"))),
-          fold(t("conv_tools", e.tools.length), () => cv_pre(e.tools)));
-      case "resume":
+          cv_files(e.files, null), cv_tools(e.tools, null));
+      }
+      case "resume": {
+        const prev = conv.tools;
+        conv.tools = e.tools;
         return row("note", t("conv_resume", e.profile.name, t("agent_mode_" + e.mode).toLowerCase(), e.entry),
-          e.note ? cv_pre(e.note) : null,
+          e.note ? el("div", { class: "cv-sec" }, el("div", { class: "cv-sec-head", text: t("conv_sec_note") }), cv_pre(e.note)) : null,
           fold(t("conv_settings"), () => cv_pre({ ended: e.ended, holes: e.holes, close_goals: e.close_goals, locks: e.locks,
             budget: e.budget, profile: e.profile })),
-          fold(t("conv_files", e.files.length), () => cv_pre(e.files.map((f) => "── " + f.name + "\n" + f.text).join("\n\n"))),
-          fold(t("conv_tools", e.tools.length), () => cv_pre(e.tools)));
+          cv_files(e.files, conv.start), cv_tools(e.tools, prev));
+      }
       case "claude_call":
-        return row("out", t("conv_claude_call", e.leg, e.model_tier),
-          fold(t("conv_prompt", size(e.prompt)), () => cv_pre(e.prompt)));
+        return row("out", t("conv_claude_call", e.leg, e.model_tier) + " · " + size(e.prompt), cv_brief(e.prompt));
       case "claude_reply":
-        return row("in", t("conv_claude_reply", e.leg) + (e.truncated ? t("conv_truncated") : ""), cv_pre(e.text));
-      case "api_request":
-        return row("out", t("conv_request", e.round, e.model),
-          e.system !== undefined ? fold(t("conv_system", size(e.system)), () => cv_pre(typeof e.system === "string" ? e.system
-            : e.system.map((b) => b.text + (b.cache_control ? "\n\n[" + JSON.stringify(b.cache_control) + "]" : "")).join("\n\n"))) : null,
-          e.tools !== undefined ? fold(t("conv_tools", e.tools.length), () => cv_pre(e.tools)) : null,
-          fold(t("conv_messages", e.new_messages.length, size(e.new_messages)), () => cv_pre(e.new_messages)));
+        return row("in", t("conv_claude_reply", e.leg) + (e.truncated ? t("conv_truncated") : ""), cv_text(e.text));
+      case "api_request": {
+        const sys = e.system === undefined ? null : typeof e.system === "string" ? e.system : e.system.map((b) => b.text).join("\n\n");
+        return row("out", t("conv_request", e.round, e.model) + " · " + t("conv_messages", e.new_messages.length, size(e.new_messages)),
+          sys !== null ? fold(t("conv_system", size(e.system)), () => cv_brief(sys)) : null,
+          e.tools !== undefined ? cv_tools(e.tools, null) : null,
+          cv_msgs(e.new_messages, true), fold(t("conv_raw_sent", size(e.new_messages)), () => cv_pre(e.new_messages)));
+      }
       case "api_response": {
         const u = e.body && e.body.usage;
-        const text = ((e.body && (e.body.content || [])) || []).filter((b) => b.type === "text").map((b) => b.text).join("\n")
-          || (((e.body && e.body.choices) || [])[0] || { message: {} }).message.content || "";
-        return row("in", t("conv_response", e.round) + (u ? t("conv_usage", JSON.stringify(u)) : ""),
-          text ? cv_pre(text) : null, fold(t("conv_raw", size(e.body)), () => cv_pre(e.body)));
+        const b = e.body || {};
+        const msg = b.content ? { role: "assistant", content: b.content } : ((b.choices || [])[0] || {}).message;
+        const use = u ? Object.entries(u).filter(([, v]) => typeof v === "number" && v > 0).map(([k, v]) => k.replace(/_tokens$/, "").replace(/_/g, " ") + " " + v).join(", ") : "";
+        return row("in", t("conv_response", e.round) + (use ? t("conv_usage", use) : ""),
+          msg ? cv_msgs([Object.assign({ role: "assistant" }, msg)]) : null, raw(e.body));
       }
       case "tool_call":
-        return row("tool", t("conv_tool", e.step, e.name), cv_pre(e.input));
-      case "tool_result":
-        return row(e.ok ? "res" : "err", t(e.ok ? "conv_result" : "conv_error", e.ms),
-          String(e.result).length > 600 ? fold(t("conv_result_size", size(e.result)), () => cv_pre(e.result)) : cv_pre(e.result),
-          e.diff ? cv_pre(e.diff.del.map((l) => "- " + l).concat(e.diff.add.map((l) => "+ " + l)).join("\n")) : null);
+        return row("tool", t("conv_tool", e.step, e.name), cv_input(e.input));
+      case "tool_result": {
+        const r = cv_result(e.result, e.ok, "");
+        const head = r.firstChild;
+        head.remove();
+        return row(e.ok ? "res" : "err", el("span", {}, t(e.ok ? "conv_result" : "conv_error", e.ms), ...head.childNodes), r,
+          e.diff ? el("pre", { class: "ag-diff" }, ...e.diff.del.map((l) => el("div", { class: "del", text: "- " + l })),
+            ...e.diff.add.map((l) => el("div", { class: "add", text: "+ " + l }))) : null);
+      }
       case "end":
-        return row("note", t("conv_end", e.steps), cv_pre(e.verdict),
-          fold(t("conv_files", e.files.length), () => cv_pre(e.files.map((f) => "── " + f.name + "\n" + f.text).join("\n\n"))));
+        return row("note", t("conv_end", e.steps), cv_pre(e.verdict), cv_files(e.files, conv.start));
       default:
         return row(/error/.test(e.type) ? "err" : "note", e.type + (e.steps !== undefined ? " · " + e.steps : ""),
           /error/.test(e.type) ? cv_pre(e) : null);

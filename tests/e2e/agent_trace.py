@@ -37,7 +37,22 @@ with sync_playwright() as p:
     heads = [x for x in page.locator(".cv-head").all_inner_texts()]
     print("2 conversation:", len(heads), "events |", [h.split("  ")[-1][:40] for h in heads][:9])
     page.locator(".cv-fold > summary", has_text="System").first.click(); time.sleep(0.2)
-    print("3 system fold:", "<task>" not in page.locator(".cv-fold[open] .cv-pre").first.inner_text(), "| has rules:", "agent at work" in page.locator(".cv-fold[open] .cv-pre").first.inner_text())
+    sys = page.locator(".cv-fold[open]").first
+    secs = sys.locator(".cv-brief > .cv-fold > summary").all_inner_texts()
+    sys.locator(".cv-brief > .cv-fold > summary", has_text="Rules").click(); time.sleep(0.2)
+    print("3 system fold:", [x.split(",")[0] for x in secs], "| no task:", not any(x.startswith("Task") for x in secs),
+          "| has rules:", "agent at work" in sys.locator(".cv-brief .cv-pre").first.inner_text())
+    # the tools one by one, the messages as cards, the files with their lines numbered
+    page.locator(".cv-fold > summary", has_text="Tools offered").first.click(); time.sleep(0.2)
+    print("3b tools:", page.locator(".cv-fold > summary", has_text="fill_hole(hole, code)").count() > 0,
+          "| cards:", page.locator(".cv-msg").count(), "| calls:", page.locator(".cv-msg .cv-call-head").all_inner_texts()[:3])
+    page.locator(".cv-fold > summary", has_text="Files (").first.click(); time.sleep(0.2)
+    page.locator(".cv-file > summary").first.click(); time.sleep(0.2)
+    print("3c file:", page.locator(".cv-file").first.locator("summary").inner_text(), "| numbered:", page.locator(".cv-file .cv-gut").first.inner_text().split("\n")[:3],
+          "| highlighted:", page.locator(".cv-file .cv-src .tk-kw").count() > 0)
+    page.screenshot(path=shot("shot_conv_rich.png"), full_page=True)
+    ends = page.locator(".cv.note").last
+    print("3d end:", ends.locator(".cv-fold > summary").first.inner_text())
     page.screenshot(path=shot("shot_conv.png"))
     # kept across a reload
     page.reload(); page.wait_for_selector("#verdict", timeout=30000); time.sleep(1)
