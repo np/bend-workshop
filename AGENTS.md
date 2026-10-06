@@ -102,6 +102,16 @@ npm run e2e                                          # the Playwright scripts (p
 The build is reproducible: the same Bend commit gives the same file (the
 commit is abbreviated to 7 characters whatever the clone's depth).
 
+**Versions.** About opens on a card: the workshop's version (the commit it
+was built from, with `+` when the tree had uncommitted changes, and that
+commit's date, not the build's, so the build stays reproducible), Bend's
+version and commit, each linked to its commit on GitHub, then *Source on
+GitHub*, *Report an issue* (a new issue, its body holding the versions, no
+more) and *Copy the versions*. `build_html.mjs` reads the commit with git
+(`dev` outside a checkout) and the repository from `GITHUB_REPOSITORY`, else
+the `origin` remote, else `np/bend-workshop`. The header has no room for a
+GitHub icon at 360 px, hence the card.
+
 - **GitHub Pages.** `.github/workflows/pages.yml` runs on every push to `main`
   (and by hand): it checks out the workshop in `workshop/` and Bend, at the
   commit in `BEND_COMMIT`, in `bend/` beside it, then `npm ci`, `npm run build`
@@ -523,7 +533,8 @@ type), the goal after `⊢`, and a toolbar.
   `lemma`, `lemma_mobile`, `lemma_pong`, `lawdef_pong`, `operators`, `opcalls`,
   `sigs_marks_lawdef_ai`. Outputs: `verdict_bendtt`, `compiler_outputs`,
   `heavy_demos`. Hub: `hub` (a fake package with real hashes, from
-  `fixtures/make_fakehub.py`). Assistant and agent: `ai_profiles`,
+  `fixtures/make_fakehub.py`). About: `about_versions` (the versions card, its links, the copy).
+  Assistant and agent: `ai_profiles`,
   `agent_claude` (a scripted Claude: hole mode, close option, sub-holes, locks,
   run, eval, lookup, guide, pause, stop, undo), `agent_apis` (simulated
   Anthropic and OpenAI servers), `agent_no_worker`, `agent_holes_export`

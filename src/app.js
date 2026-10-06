@@ -4242,15 +4242,15 @@
       await navigator.clipboard.writeText(text);
       toast(t("copied"));
     } catch (e) {
-      const t = el("textarea", { style: "position:fixed;opacity:0" });
-      t.value = text;
-      document.body.append(t);
-      t.select();
+      const ta = el("textarea", { style: "position:fixed;opacity:0" });
+      ta.value = text;
+      document.body.append(ta);
+      ta.select();
       let ok = false;
       try {
         ok = document.execCommand("copy");
       } catch (e2) {}
-      t.remove();
+      ta.remove();
       toast(ok ? t("copied") : t("copy_fail"));
     }
   }
@@ -5261,8 +5261,41 @@
     return box;
   }
 
+  // Which workshop and which Bend this page is, each linked to its commit,
+  // then the source and the issue tracker: what a bug report needs first.
+  const WORKSHOP = { repo: "__WS_REPO__", commit: "__WS_COMMIT__", date: "__WS_DATE__" };
+  const GITHUB_ICON = "<svg width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"currentColor\" aria-hidden=\"true\"><path d=\"M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z\"/></svg>";
+
+  function versions_text() {
+    return "Bend 2 pocket workshop " + WORKSHOP.commit + (WORKSHOP.date ? " (" + WORKSHOP.date + ")" : "")
+      + "\nBend " + Core.VERSION + " (" + Core.COMMIT + ")";
+  }
+
+  function versions_card() {
+    const link = (href, ...kids) => el("a", { href, target: "_blank", rel: "noopener" }, ...kids);
+    const ws_sha = WORKSHOP.commit.replace(/\+$/, "");
+    const ws = /^[0-9a-f]{7}$/.test(ws_sha)
+      ? link(WORKSHOP.repo + "/commit/" + ws_sha, el("code", { text: WORKSHOP.commit }))
+      : el("code", { text: WORKSHOP.commit });
+    const bend = Core.COMMIT
+      ? link("https://github.com/bendlang/bend/commit/" + Core.COMMIT, el("code", { text: Core.COMMIT }))
+      : null;
+    const issue = WORKSHOP.repo + "/issues/new?body=" + encodeURIComponent("\n\n---\n" + versions_text());
+    return el("div", { class: "versions" },
+      el("div", { class: "ver-row" }, el("span", { class: "ver-k", text: t("ver_workshop") }),
+        el("span", {}, WORKSHOP.date ? WORKSHOP.date + " · " : "", ws)),
+      el("div", { class: "ver-row" }, el("span", { class: "ver-k", text: "Bend" }),
+        el("span", {}, Core.VERSION, bend ? " · " : "", bend)),
+      el("div", { class: "row ver-links" },
+        el("a", { class: "btn", href: WORKSHOP.repo, target: "_blank", rel: "noopener", html: GITHUB_ICON + " " + esc(t("ver_source")) }),
+        el("a", { class: "btn", href: issue, target: "_blank", rel: "noopener", text: t("ver_issue") }),
+        el("button", { class: "btn", type: "button", text: t("ver_copy"), onclick: () => copy_text(versions_text()) })));
+  }
+
   function about_sheet() {
-    sheet_open(t("about"), $("#about-" + lang).content.cloneNode(true));
+    const body = el("div", {}, versions_card());
+    body.append($("#about-" + lang).content.cloneNode(true));
+    sheet_open(t("about"), body);
   }
 
   // A change of language redraws what is on screen; what a check or a run

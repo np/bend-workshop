@@ -2,6 +2,7 @@
 // the examples, the runner prelude, the compiler bundle and the app script.
 import fs from "node:fs";
 import zlib from "node:zlib";
+import { execFileSync } from "node:child_process";
 
 const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const REPO = "https://github.com/bendlang/bend/blob/main/";
@@ -75,6 +76,22 @@ const read = (p) => fs.readFileSync(p, "utf8");
 const assets = read("gen/assets.ts");
 const version = /VERSION = "([^"]+)"/.exec(assets)[1];
 const commit = /COMMIT = "([^"]*)"/.exec(assets)[1];
+// The workshop's own version: the commit it was built from and that
+// commit's date (not the build's, so a build stays reproducible), and the
+// repository it came from. Outside a git checkout, "dev".
+const git = (...a) => {
+  try {
+    return execFileSync("git", a, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  } catch (e) {
+    return "";
+  }
+};
+const ws_commit = git("rev-parse", "--short=7", "HEAD") || "dev";
+const ws_date = git("log", "-1", "--format=%cs") || "";
+const ws_dirty = ws_commit !== "dev" && git("status", "--porcelain", "--untracked-files=no") !== "";
+const ws_origin = /github\.com[:/]([\w.-]+\/[\w.-]+?)(\.git)?$/.exec(process.env.GITHUB_REPOSITORY
+  ? "github.com/" + process.env.GITHUB_REPOSITORY : git("remote", "get-url", "origin"));
+const ws_repo = "https://github.com/" + (ws_origin ? ws_origin[1] : "np/bend-workshop");
 const core = read("dist/bend-core.js");
 if (/<\/script/i.test(core)) throw new Error("the bundle holds a closing script tag");
 const prelude = read("src/runner-prelude.js");
@@ -92,7 +109,8 @@ let html = read("src/index.template.html");
 for (const [k, v] of Object.entries(fill)) {
   html = html.replace("/*__" + k + "__*/", () => v);
 }
-html = html.replace(/__VERSION__/g, version).replace(/__COMMIT__/g, commit);
+html = html.replace(/__VERSION__/g, version).replace(/__COMMIT__/g, commit)
+  .replace(/__WS_COMMIT__/g, ws_commit + (ws_dirty ? "+" : "")).replace(/__WS_DATE__/g, ws_date).replace(/__WS_REPO__/g, ws_repo);
 const out = process.argv[2] ?? "dist/index.html";
 fs.writeFileSync(out, html);
 console.log(out, (html.length / 1024).toFixed(0) + " KB");

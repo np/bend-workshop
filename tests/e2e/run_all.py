@@ -17,7 +17,7 @@ TESTS = [
     "languages", "sigs_marks_lawdef_ai", "split", "constructors", "solve_lazy", "verdict_bendtt", "split_narrow",
     "split_disabled", "long_goals", "lemma", "lemma_mobile", "lemma_pong", "lawdef_pong", "network_audit", "fonts_off",
     "hub", "operators", "ai_profiles", "agent_claude", "agent_apis", "agent_no_worker", "agent_holes_export",
-    "agent_tools", "agent_trace", "agent_resume", "portuguese", "opcalls", "timers_busy", "compiler_outputs",
+    "agent_tools", "agent_trace", "agent_resume", "about_versions", "portuguese", "opcalls", "timers_busy", "compiler_outputs",
 ]
 
 
