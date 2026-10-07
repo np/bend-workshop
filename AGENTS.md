@@ -408,14 +408,29 @@ type), the goal after `⊢`, and a toolbar.
   accepted. By default the code may leave sub-holes, which join the session.
   The option "each fill must close its goal" refuses code that holds a `?hole`.
 - **Loops.** With Claude in the viewer, a call allows a handful of tool rounds
-  and 64 KiB of text. A session is therefore a chain of calls. Each starts from
-  a brief: the rules, the task, the project as it stands (files inline up to
-  20k characters), a journal of the last 30 tool calls, and two sections of
-  the guide (Syntax Reference, Laws and Proofs). The chain goes on while the
-  agent ends with `STATUS: continue` and made at least one call. With an API,
-  the page runs the loop itself (Anthropic `tool_use`/`tool_result` with the
-  system cached; OpenAI `tool_calls`/`tool`), the full guide in the system
-  prompt.
+  and 256 KiB of text. A session is therefore a chain of calls. Each starts
+  from a brief: the rules, the task, the project as it stands (files inline
+  up to the profile's limit), two sections of the guide (Syntax Reference,
+  Laws and Proofs), and past the first call a journal: the message that
+  ended each earlier call (the latest first in line for room), the last tool
+  calls with what each returned (a repeated read kept once, a read of a
+  quoted project file not repeated), and the `NEXT:` plan the last call was
+  asked to leave before `STATUS: continue`. A rule tells it it is continuing,
+  not starting: no survey of the project again, start from the plan. Older
+  tool calls, then the quoted files, give way when the brief would pass what
+  `sample.limits()` reports (`maxPromptBytes`, 256 KiB today) less 20 KB.
+  Every tool round of a call re-reads the whole prompt on the user's account,
+  so the defaults stay well under that (about 100 KB at worst). The chain goes on while the agent ends with `STATUS: continue` and
+  made at least one call. With an API, the page runs the loop itself
+  (Anthropic `tool_use`/`tool_result` with the system cached; OpenAI
+  `tool_calls`/`tool`), the full guide in the system prompt.
+- **Limits.** Each AI profile has its own (AI settings, *Agent limits*;
+  empty is the default, `AGENT_LIMITS` in `agent.js`): the project quoted
+  (`files`), one tool result (`result`); with Claude, what a call hands the
+  next (`calls`, `keep` characters of each result, `said` characters of
+  messages); with an API, one reply's `tokens`. They are read when a leg
+  starts and hold until it ends, whatever profile Settings makes active
+  meanwhile. The trace records them.
 - **Control.** Tool calls run one at a time, even when a round asks for
   several. Before the first, a snapshot is taken ("before the agent") and the
   editor turns read-only; the page's own edits (key bar, Split, Lemma, file

@@ -9,15 +9,18 @@
   // first, and one tap undoes the whole session.
   //
   // With Claude through the viewer, one call allows only a handful of tool
-  // rounds and 64 KiB of text, so a session is a chain of calls, each
-  // starting from the project as it stands and a short journal. With an
-  // API, the page runs the tool loop itself. Tools run one at a time.
+  // rounds and 256 KiB of text, so a session is a chain of calls, each
+  // starting from the project as it stands and a journal of the calls
+  // before it: their messages, their tool calls with what they returned,
+  // and the plan the last one left. With an API, the page runs the tool
+  // loop itself. Tools run one at a time. What a session carries is the
+  // profile's to set (agent_limits).
 
   const agent = {
     running: false, writing: false, paused: null, steps: 0, budget: 20, size: 20,
     log: [], ctl: null, queue: Promise.resolve(), mode: "project", holes: [], close: false,
     entry: "", task: "", before: null, done: false, last: "", raf: 0,
-    trace: [], t0: 0, wall: 0, notes: [], ended: "", note_draft: "",
+    trace: [], t0: 0, wall: 0, notes: [], ended: "", note_draft: "", lim: null,
   };
 
   // Everything said and done in a session, for whoever debugs it: what the
@@ -27,7 +30,33 @@
   function trace(type, data) {
     agent.trace.push(Object.assign({ t: Math.round(performance.now() - agent.t0), type }, data));
   }
-  const AGENT_RESULT = 6000;   // characters of one tool result
+  // What a session may carry, by provider; a profile's own numbers (AI
+  // settings, Agent limits) override these. files: characters of the
+  // project quoted in the brief; result: one tool result as the agent gets
+  // it; with Claude, what one call hands the next: calls (tool calls),
+  // keep (characters of each of their results), said (characters of the
+  // earlier messages); with an API, tokens: one reply's length.
+  const AGENT_LIMITS = {
+    claude: { files: 40000, result: 6000, calls: 40, keep: 1000, said: 8000 },
+    api: { files: 80000, result: 6000, tokens: 4096 },
+  };
+  const AGENT_LIMIT_MAX = { files: 200000, result: 50000, calls: 400, keep: 20000, said: 60000, tokens: 128000 };
+  // A Claude call's prompt: what sample.limits() reports, less a margin for
+  // the platform's own framing; 256 KiB when it reports nothing.
+  function sample_bytes() {
+    return Math.max(32000, (ai.max_prompt || 262144) - 20000);
+  }
+
+  function agent_limits(cfg) {
+    const base = AGENT_LIMITS[cfg && cfg.provider === "claude" ? "claude" : "api"];
+    const own = (cfg && cfg.limits) || {};
+    const out = {};
+    for (const k of Object.keys(base)) {
+      const n = Math.floor(Number(own[k]));
+      out[k] = Number.isFinite(n) && n > 0 ? Math.min(n, AGENT_LIMIT_MAX[k]) : base[k];
+    }
+    return out;
+  }
   const AGENT_RUN_MS = 10000;  // a run or an eval, at most
 
   // What the agent may not write: locked files; in a hole session, all of
@@ -591,7 +620,8 @@
 
   function agent_clip(out) {
     const text = typeof out === "string" ? out : JSON.stringify(out, null, 1);
-    return text.length > AGENT_RESULT ? text.slice(0, AGENT_RESULT) + "\n…[cut: ask for less]" : text;
+    const max = (agent.lim || agent_limits(ai_cfg())).result;
+    return text.length > max ? text.slice(0, max) + "\n…[cut: ask for less]" : text;
   }
 
   // One tool call: counted, paused at the budget, run after the ones
@@ -669,9 +699,88 @@
 
   const AGENT_REF = ["Syntax Reference", "Laws and Proofs"];
 
+  // The tools that only read: asked again with the same arguments, only
+  // the latest answer is worth keeping in the journal.
+  const AGENT_READS = new Set(["list_files", "read_file", "list_symbols", "signature", "lookup", "guide", "list_holes"]);
+
+  // The plan a Claude call leaves for the next: its NEXT: section.
+  function agent_plan(text) {
+    const m = /(?:^|\n)[ \t*#_]*NEXT[ \t*_]*:[ \t]*([\s\S]*?)(?=\n[ \t*#_]*STATUS[ \t*_]*:|$)/i.exec(text || "");
+    return m ? m[1].trim().slice(0, 4000) : "";
+  }
+
+  function agent_cut(text, n) {
+    return text.length > n ? text.slice(0, n) + "\n…[cut]" : text;
+  }
+
+  // What the earlier calls of a Claude session did, for the next one: their
+  // messages (the latest first in line for room), their last tool calls
+  // with what they returned, the plan left. A read of a project file quoted
+  // in <files> is not repeated: the file as it stands is there.
+  function agent_journal(lim, inline, n_calls) {
+    const said = agent.log.filter((e) => e.kind === "say" && e.text && e.text.trim() && e.text !== t("ai_thinking"));
+    const tools = agent.log.filter((e) => e.kind === "tool");
+    if (said.length === 0 && tools.length === 0) {
+      return "";
+    }
+    const msgs = [];
+    let room = lim.said;
+    for (let i = said.length - 1; i >= 0 && room > 200; i--) {
+      const text = said[i].text.trim();
+      const part = text.length > room ? "[…] " + text.slice(text.length - room) : text;
+      room -= part.length;
+      msgs.unshift("<message call=\"" + (i + 1) + "\">\n" + part + "\n</message>");
+    }
+    const seen = new Set();
+    const kept = [];
+    for (let i = tools.length - 1; i >= 0 && kept.length < n_calls; i--) {
+      const e = tools[i];
+      if (AGENT_READS.has(e.name)) {
+        const key = e.name + JSON.stringify(e.args || {});
+        if (seen.has(key)) {
+          continue;
+        }
+        seen.add(key);
+      }
+      kept.push([i + 1, e]);
+    }
+    kept.reverse();
+    const calls = kept.map(([n, e]) => {
+      const args = agent_cut(JSON.stringify(e.args || {}), 400);
+      const head = "[" + n + "] " + e.name + " " + args + " → " + (e.state === "ok" ? "ok" : e.state === "err" ? "error" : "not finished")
+        + (e.verdict ? " (" + e.verdict + ")" : "");
+      let out;
+      if (e.state === "ok" && e.name === "read_file" && inline && state.files.some((f) => f.name === String((e.args || {}).path))) {
+        out = "(this file, as it stands now, is in <files>)";
+      } else {
+        const r = e.result;
+        out = r === undefined ? "" : agent_cut(typeof r === "string" ? r : JSON.stringify(r), lim.keep);
+      }
+      return head + (out ? "\n" + out.replace(/^/gm, "    ") : "");
+    });
+    const plan = agent_plan(agent.last);
+    const parts = ["<so_far>\nThis is call " + (said.length + 1) + " of a session already under way: "
+      + tools.length + " tool calls so far. Below is what you did and saw; it stays true unless a later write changed it."];
+    if (msgs.length) {
+      parts.push("<earlier_messages>\nWhat you wrote at the end of each earlier call" + (msgs.length < said.length ? " (the oldest left out)" : "")
+        + ":\n" + msgs.join("\n") + "\n</earlier_messages>");
+    }
+    if (calls.length) {
+      parts.push("<tool_calls>\n" + (kept.length < tools.length ? "The last " + kept.length + " of them, repeated reads left out, oldest first"
+        : "All of them, repeated reads left out, oldest first") + ", each with what it returned:\n" + calls.join("\n") + "\n</tool_calls>");
+    }
+    if (plan) {
+      parts.push("<plan>\nThe next steps you planned at the end of the last call. Take them up from the first one:\n" + plan + "\n</plan>");
+    }
+    return parts.join("\n\n") + "\n</so_far>";
+  }
+
   // What the agent is told: who it is, what it may do, the task, the
-  // project as it stands, and, past the first call, what it did so far.
+  // project as it stands, and, with Claude past the first call, the journal
+  // of what it did so far. Kept under the viewer's prompt size by giving up
+  // older tool calls first, then the quoted files.
   function agent_brief(compact) {
+    const lim = agent.lim || agent_limits(ai_cfg());
     const md = $("#bend-guide-md").textContent;
     const ref = compact ? AGENT_REF.map((s) => {
       try {
@@ -680,6 +789,7 @@
         return "";
       }
     }).join("\n\n") : md;
+    const going = compact && agent.log.some((e) => e.kind === "tool");
     const locks = state.files.filter((f) => agent_locked(f.name)).map((f) => f.name);
     const rules = [
       "You are an agent at work in the Bend 2 workshop, a web page that runs Bend's own checker and compiler. Bend 2 is a functional language with dependent types, affine variables and a termination checker; its syntax is Python-shaped, its semantics close to Lean.",
@@ -690,36 +800,66 @@
         : "You may change any file" + (locks.length ? " except these, locked by the user: " + locks.join(", ") : "") + ". Base and hub modules are read-only.",
       "Every write is checked at once and the verdict comes back to you. Rely on it: a proof counts only when the checker accepts it, the verdict reading ALL PROOFS CHECK. Never claim that something works unless a check or a run showed it.",
       "Prefer small steps: one hole, one lemma, one fix at a time, then look at the verdict. A ?name in the code prints its goal on the next check, with its context: use that to see what is wanted.",
-      "End your final message with one line: STATUS: done (the task is done), STATUS: continue (you have more to do and want to go on), or STATUS: blocked (say why). Write that message in " + LANG_NAMES[lang] + ".",
     ];
+    if (compact) {
+      rules.push("This call allows only a few tool rounds; the session goes on in further calls, each handed a journal of the ones before. Spend the rounds on the work: a write, a check, a run.");
+    }
+    if (going) {
+      rules.push("You are continuing this session, not starting it. Do not survey the project again: the files are quoted below as they stand after your changes, and <so_far> holds the lookups, signatures and guide sections you already read and what they said. Read or look up only what is not there. Start from <plan> and make the next concrete change.");
+    }
+    rules.push("End your final message with one line: STATUS: done (the task is done), STATUS: continue (you have more to do and want to go on), or STATUS: blocked (say why)."
+      + (compact ? " Before STATUS: continue, write a NEXT: section: the concrete steps still to take, starting with the very next tool call, with what you learned that they rely on; it is handed back to you in the next call." : "")
+      + " Write that message in " + LANG_NAMES[lang] + ".");
     const files = state.files.filter((f) => /\.(bend|js)$/.test(f.name));
     const size = files.reduce((n, f) => n + f.text.length, 0);
-    const room = compact ? 20000 : 80000;
-    const parts = [rules.join("\n\n"),
-      "<task>\n" + agent.task + "\n</task>"];
-    if (agent.ended !== "") {
-      // a session taken up again: why it stopped, and what the user says now
-      parts.push("<resumed>\nThis session stopped once (" + agent.ended + ") and the user took it up again."
-        + " The settings may have changed: the rules above are the ones that hold now."
-        + (agent.notes.length ? "\nThe user's instructions for going on, latest last:\n" + agent.notes.map((n) => "- " + n).join("\n") : "")
-        + "\n</resumed>");
+    const build = (n_calls, inline) => {
+      const parts = [rules.join("\n\n"),
+        "<task>\n" + agent.task + "\n</task>"];
+      if (agent.ended !== "") {
+        // a session taken up again: why it stopped, and what the user says now
+        parts.push("<resumed>\nThis session stopped once (" + agent.ended + ") and the user took it up again."
+          + " The settings may have changed: the rules above are the ones that hold now."
+          + (agent.notes.length ? "\nThe user's instructions for going on, latest last:\n" + agent.notes.map((n) => "- " + n).join("\n") : "")
+          + "\n</resumed>");
+      }
+      parts.push(
+        "<state>\nChecks start from " + agent.entry + ".\n" + JSON.stringify(tool_list(), null, 1) + "\n</state>");
+      if (inline) {
+        parts.push("<files>\nThe project as it stands now" + (going ? ", after every change you made: no need to read these files again" : "") + ".\n"
+          + files.map((f) => "<file path=\"" + f.name + "\">\n" + f.text + "\n</file>").join("\n") + "\n</files>");
+      } else {
+        parts.push("The files are too large to quote here: read them with read_file.");
+      }
+      if (compact) {
+        const j = agent_journal(lim, inline, n_calls);
+        if (j) {
+          parts.push(j);
+        }
+      } else if (agent.log.some((e) => e.kind === "tool")) {
+        const done = agent.log.filter((e) => e.kind === "tool").slice(-30).map((e) => "- " + e.name + " "
+          + JSON.stringify(e.args).slice(0, 160) + " → " + (e.state === "ok" ? "ok" + (e.verdict ? " (" + e.verdict + ")" : "")
+            : "error: " + String(e.result).slice(0, 160)));
+        parts.push("<so_far>\nWhat you did so far in this session, latest last:\n" + done.join("\n")
+          + (agent.last ? "\n\nYour last message:\n" + agent.last.slice(-1500) : "") + "\n</so_far>");
+      }
+      parts.push("<bend_reference>\n" + ref + "\n</bend_reference>");
+      return parts.join("\n\n");
+    };
+    let n_calls = lim.calls || 0;
+    let inline = size <= lim.files;
+    let brief = build(n_calls, inline);
+    const cap = sample_bytes();
+    while (compact && new TextEncoder().encode(brief).length > cap) {
+      if (n_calls > 5) {
+        n_calls = Math.floor(n_calls / 2);
+      } else if (inline) {
+        inline = false;
+      } else {
+        break;
+      }
+      brief = build(n_calls, inline);
     }
-    parts.push(
-      "<state>\nChecks start from " + agent.entry + ".\n" + JSON.stringify(tool_list(), null, 1) + "\n</state>");
-    if (size <= room) {
-      parts.push("<files>\n" + files.map((f) => "<file path=\"" + f.name + "\">\n" + f.text + "\n</file>").join("\n") + "\n</files>");
-    } else {
-      parts.push("The files are too large to quote here: read them with read_file.");
-    }
-    if (agent.log.some((e) => e.kind === "tool")) {
-      const done = agent.log.filter((e) => e.kind === "tool").slice(-30).map((e) => "- " + e.name + " "
-        + JSON.stringify(e.args).slice(0, 160) + " → " + (e.state === "ok" ? "ok" + (e.verdict ? " (" + e.verdict + ")" : "")
-          : "error: " + String(e.result).slice(0, 160)));
-      parts.push("<so_far>\nWhat you did so far in this session, latest last:\n" + done.join("\n")
-        + (agent.last ? "\n\nYour last message:\n" + agent.last.slice(-1500) : "") + "\n</so_far>");
-    }
-    parts.push("<bend_reference>\n" + ref + "\n</bend_reference>");
-    return parts.join("\n\n");
+    return brief;
   }
 
   async function agent_claude(cfg) {
@@ -800,7 +940,7 @@
     const model = cfg.model || AI_PROVIDERS[cfg.provider].model || "";
     if (cfg.provider === "anthropic") {
       const data = await agent_post(url + "/v1/messages", { "x-api-key": cfg.key, "anthropic-version": "2023-06-01",
-        "anthropic-dangerous-direct-browser-access": "true" }, { model, max_tokens: 4096,
+        "anthropic-dangerous-direct-browser-access": "true" }, { model, max_tokens: agent_limits(cfg).tokens,
         system: [{ type: "text", text: sys, cache_control: { type: "ephemeral" } }],
         tools: tools.map((tl) => ({ name: tl.name, description: tl.description, input_schema: tl.schema })), messages: msgs });
       const blocks = data.content || [];
@@ -810,7 +950,7 @@
         answer: (rs) => [{ role: "user", content: rs.map((r) => ({ type: "tool_result", tool_use_id: r.id, content: r.text, is_error: !r.ok })) }] };
     }
     const data = await agent_post(url + "/v1/chat/completions", cfg.key ? { authorization: "Bearer " + cfg.key } : {},
-      { model, max_tokens: 4096, messages: [{ role: "system", content: sys }].concat(msgs),
+      { model, max_tokens: agent_limits(cfg).tokens, messages: [{ role: "system", content: sys }].concat(msgs),
         tools: tools.map((tl) => ({ type: "function", function: { name: tl.name, description: tl.description, parameters: tl.schema } })) });
     const m = ((data.choices || [])[0] || {}).message || {};
     const calls = (m.tool_calls || []).map((c) => {
@@ -888,7 +1028,7 @@
   // resumption, since they may have changed).
   function agent_settings(cfg) {
     return { mode: agent.mode, holes: agent.holes.slice(), close_goals: agent.close, entry: agent.entry,
-      locks: (state.locks || []).slice(), budget: agent.size, language: lang,
+      locks: (state.locks || []).slice(), budget: agent.size, language: lang, limits: agent_limits(cfg),
       profile: { name: cfg.name, provider: cfg.provider, model: cfg.model || AI_PROVIDERS[cfg.provider].model || "",
         url: cfg.provider === "custom" ? cfg.url : undefined },
       tools: agent_tools().map((tl) => ({ name: tl.name, description: tl.description, schema: tl.schema })),
@@ -952,7 +1092,10 @@
 
   // One leg of a session, from the start or from a resumption, to its end.
   async function agent_go(cfg) {
-    Object.assign(agent, { running: true, budget: agent.steps + agent.size, ctl: new AbortController(), queue: Promise.resolve() });
+    // the limits hold for the whole leg, whatever profile Settings makes
+    // active meanwhile
+    Object.assign(agent, { running: true, budget: agent.steps + agent.size, ctl: new AbortController(), queue: Promise.resolve(),
+      lim: agent_limits(cfg) });
     snap_take("snap_agent", true);
     ed.ta.readOnly = true;
     document.body.classList.add("agent-busy");

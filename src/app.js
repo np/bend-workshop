@@ -3540,7 +3540,7 @@
   // else it goes straight to the configured server from this browser,
   // with the key kept here.
 
-  const ai = { sample: null, pending: null, ctl: null, last: null,
+  const ai = { sample: null, pending: null, ctl: null, last: null, max_prompt: 0,
     on: () => {
       const p = ai_cfg();
       return p !== null && (p.provider !== "claude" || ai.sample !== null || ai.pending !== null);
@@ -3599,6 +3599,7 @@
         try {
           const lim = got && typeof got.limits === "function" ? await got.limits() : null;
           ai.tools = !!(lim && lim.tools);
+          ai.max_prompt = lim && lim.maxPromptBytes > 0 ? lim.maxPromptBytes : 0;
         } catch (e) {
           ai.tools = false;
         }
@@ -5102,6 +5103,7 @@
   function ai_settings() {
     const viewer = !!(window.claude && typeof window.claude.use === "function");
     const box = el("div", { class: "field ai-box" });
+    let lim_open = false;
     const paint = () => {
       box.textContent = "";
       const profiles = state.ai.profiles;
@@ -5228,8 +5230,38 @@
       if ((cfg.models || []).length === 0) {
         refresh();
       }
+      // the agent's limits for this profile: empty is the default, shown
+      // greyed in the box; what does not apply to the provider is not shown
+      const lims = AGENT_LIMITS[claude ? "claude" : "api"];
+      const limit = (k) => {
+        const own = cfg.limits && cfg.limits[k];
+        const i = el("input", { type: "number", min: "1", max: String(AGENT_LIMIT_MAX[k]), step: "1", inputmode: "numeric",
+          value: own ? String(own) : "", placeholder: String(lims[k]), "aria-label": t("lim_" + k) });
+        i.addEventListener("input", () => {
+          const n = Math.floor(Number(i.value));
+          cfg.limits = Object.assign({}, cfg.limits);
+          if (i.value.trim() === "" || !(n > 0)) {
+            delete cfg.limits[k];
+          } else {
+            cfg.limits[k] = Math.min(n, AGENT_LIMIT_MAX[k]);
+          }
+          save();
+        });
+        return el("label", {}, t("lim_" + k), i);
+      };
+      const limits = el("details", { class: "ai-limits", open: lim_open },
+        el("summary", { text: t("ai_limits") }),
+        el("div", { class: "ai-rows" }, ...Object.keys(lims).map(limit),
+          el("small", { text: t(claude ? "ai_limits_hint_claude" : "ai_limits_hint_api") }),
+          el("div", { class: "row" }, el("button", { class: "btn", type: "button", text: t("ai_limits_reset"), onclick: () => {
+            delete cfg.limits;
+            save();
+            paint();
+          } }))));
+      limits.addEventListener("toggle", () => { lim_open = limits.open; });
       const dup = el("button", { class: "btn", type: "button", text: t("duplicate"), onclick: () => {
-        const p = { ...cfg, id: proj_id(), name: cfg.name + t("copy_suffix"), models: (cfg.models || []).slice() };
+        const p = { ...cfg, id: proj_id(), name: cfg.name + t("copy_suffix"), models: (cfg.models || []).slice(),
+          limits: cfg.limits ? { ...cfg.limits } : undefined };
         profiles.splice(profiles.indexOf(cfg) + 1, 0, p);
         state.ai.active = p.id;
         save();
@@ -5254,6 +5286,7 @@
         el("label", {}, t("ai_model"), el("div", { class: "row" }, el("span", { class: "grow" }, list), claude ? null : again),
           claude ? null : model, status),
         claude ? null : el("label", {}, t("ai_key"), key),
+        limits,
         el("div", { class: "row" }, dup, del)),
         el("small", { text: claude ? t("ai_hint_claude") : (viewer ? t("ai_hint_viewer") + " " : "") + t("ai_hint_key") }));
     };
