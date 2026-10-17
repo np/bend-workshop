@@ -72,9 +72,10 @@ tests/e2e/shots/, tests/e2e/fixtures/fakehub/  what the tests write (ignored)
 | `scripts/gen_assets.mjs` | Writes `gen/assets.ts` (`base.bend`, the effects' `.js`, the operator table read from `bend.ts`, version and commit) and `gen/c_effects.json` (the effects' `.c`/`.h`, for the C output only) |
 | `scripts/gen_examples.mjs` | Writes `gen/examples.json`: guide snippets, demos and `ex/` files, titles, notes and groups in every language |
 | `build.sh` | esbuild → `dist/bend-core.js` (IIFE global `BendCore`) |
-| `scripts/build_html.mjs` | Renders `GUIDE.md`, compresses `gen/c_effects.json` (deflate-raw, base64), splices `opcall.js` and `agent.js` into `app.js`, fills `src/index.template.html` → `dist/index.html` |
+| `scripts/build_html.mjs` | Renders `GUIDE.md`, compresses `gen/c_effects.json` (deflate-raw, base64), splices `opcall.js`, `moves.js` and `agent.js` into `app.js`, fills `src/index.template.html` → `dist/index.html` |
 | `src/app.js` | The whole interface, one IIFE, sectioned by `// Name` headers |
 | `src/opcall.js` | Operators ⇄ calls: the infix table's climbing, the namespace walk, printing with the fewest parentheses; spliced at `/*__OPCALL__*/` |
+| `src/moves.js` | Rename and move: the name scan, the plans (pure, tested in Node), the check before writing, their sheets; spliced at `/*__MOVES__*/` |
 | `src/agent.js` | The agent mode: tools, locks, the two loops, the trace, past sessions, its pane; spliced at `/*__AGENT__*/` |
 | `src/i18n.js` | `window.BEND_LANGS = { en, fr, pt }`; values are strings or functions |
 | `src/index.template.html` | The page's markup, with one About per language (`about-en`, `about-fr`, `about-pt`) |
@@ -82,7 +83,7 @@ tests/e2e/shots/, tests/e2e/fixtures/fakehub/  what the tests write (ignored)
 | `src/runner-prelude.js` | The host a compiled program expects (process, `require("fs")`, `BEND_SYS`), plus the Window display loop |
 | `src/runner-tail.js` | Appended after a compiled program that opens a Window: replaces `io_exit` and the `Window.*` effects |
 | `ex/` | Programs written for the page: FizzBuzz, a JS foreign effect, the bounty |
-| `tests/node/` | `examples`, `guide`, `opcall`, `i18n` (in `npm test`); `core` (a quick look at the bundle); `run` (the harness the others share) |
+| `tests/node/` | `examples`, `guide`, `opcall`, `moves`, `i18n` (in `npm test`); `core` (a quick look at the bundle); `run` (the harness the others share) |
 | `tests/e2e/` | One Playwright script per feature, named for it; `serve.py` serves `dist/` with an optional CSP and gives `shot()` and `fixture()`; `run_all.py` runs them |
 
 `../bend` must be a clone of bendlang/bend at the commit in `BEND_COMMIT`
@@ -223,6 +224,11 @@ targets, all pure TypeScript, so all within the page's reach:
 - **Typing.** Enter auto-indents after `:`. Tab and Shift-Tab shift by 2.
   Smart quotes and dashes from phone keyboards are turned back into ASCII. The
   key bar inserts through `execCommand`, so undo keeps working.
+- **Caret per file.** Each file keeps where the caret was and how far the
+  editor was scrolled the last time it was open (with the project, so a
+  reload gives them back; a hub tab's for the visit only). A click on a tab
+  ends by collapsing the selection of an editor that had the focus, so the
+  caret is put back again on the next frame.
 - **Live check.** The live check runs 380 ms after typing stops. A
   `PROOF.bend` in the workspace is checked too, which drives the "laws" badge.
 - **Declarations come from the text, not the checker** (`decl_scan`), so
@@ -245,7 +251,10 @@ type), the goal after `⊢`, and a toolbar.
   scrolled into view.
 - **Constructors / Solve.** A goal lists the terms its type is built from:
   constructors with a fresh hole per field, `{==}` for an equality, a pair,
-  `0n`/`1n+?`, `[]`/`?h <> ?t`. Every candidate is tried in the checker in
+  `0n`/`1n+?`, `[]`/`?h <> ?t`. A type imported as `S` prints as `S.Shape`
+  and is built as `S.Circle{..}`: the constructors are looked up through the
+  file's import (a project file or a hub module) and written with the alias
+  (`ctors_for`, which Split uses too). Every candidate is tried in the checker in
   place of the hole. When exactly one fits and leaves no hole, the button reads
   *Solve* and fills the hole directly. Trying runs by itself after a check when
   the file checks in under 400 ms, at most 24 tries per pass, nearest card
@@ -288,7 +297,8 @@ type), the goal after `⊢`, and a toolbar.
   refuse the operator and lists the types that define the verb.
 - **Sheets and tooltips.** Tapping a row opens a sheet: the declaration, its
   doc comment, then "Go to the definition" / "See in Base", law⇄def,
-  operators⇄calls, and the assistant. With a mouse, hovering shows the same
+  operators⇄calls, *Rename* and *Move to…* (a project file's own
+  declarations), and the assistant. With a mouse, hovering shows the same
   as a tooltip.
 - **Operators ⇄ calls.** `(x + y * 3n : Nat)` and `Nat.add(x, Nat.mul(y, 3n))`
   are one term, so either is offered from the other.
@@ -315,6 +325,31 @@ type), the goal after `⊢`, and a toolbar.
     parentheses precedence needs are written. A result without a group of its
     own is parenthesized unless it fills an argument or a whole statement.
   - *Checked first:* the change is written only if the verdict stays the same.
+- **Rename and move** (`moves.js`). Both work on the names as the checker
+  reads them (`mv_tokens`: comments, strings, characters, numbers, holes and
+  import lines left out), across the project's files.
+  - *Rename.* The bare name in its own file, `Alias.name` in the files that
+    import it (a law filled elsewhere as `def L.name` included). A type takes
+    its namespace (`Shape.add` becomes `Form.add`), since operators find
+    their defs there. Refused for a name already declared in the file. The
+    sheet shows, as one types, which files change and how often.
+  - *Move.* The declaration leaves with its doc comment; a def takes the law
+    of its name, a type its constructors. In the moved text, names of its old
+    file go through an import of it, names reached through the old file's
+    imports through the target's (an import added when missing, its alias
+    the old one or the file's stem), names of the target become bare. What
+    stays in the old file, and the files importing it, reach the moved names
+    through an import of the target. Imports the move leaves unused go. It
+    lands after what it uses in the target and before what uses it, since
+    safe code names only what is above it; when both cannot hold, it is
+    refused and says which declaration is in the way. A move that would make
+    the imports go round is refused with the circle (`a.bend → b.bend →
+    a.bend`). The target can be a new file.
+  - *Checked first.* Every entry file of the project (one no other file
+    imports) is checked before and after; nothing is written if one checks
+    worse, and the sheet shows what the checker said. A snapshot first, then
+    the open file goes through the editor's undo stack, the other files are
+    written directly, and the toast's *Undo* restores the snapshot.
 
 ## Storage (localStorage, per browser)
 
@@ -530,7 +565,9 @@ type), the goal after `⊢`, and a toolbar.
   the exceptions by design (a `LAWS.bend` alone, a `.js` effect, a window with
   no display under Node, the bounty's `?TODO`) and fails on anything else.
   `guide.mjs` runs the guide's snippets. `opcall.mjs` checks the conversions
-  and their round trips. `i18n.mjs` checks the languages against English.
+  and their round trips. `moves.mjs` renames and moves in a small project
+  and checks the result with Bend's checker, and the refusals (cycle, name
+  taken, bad name). `i18n.mjs` checks the languages against English.
 - **Playwright** (`npm run e2e`, from the repo root, after a build). Each
   script in `tests/e2e/` drives the page for one feature and prints what it
   sees; screenshots go to `tests/e2e/shots/`. `run_all.py` runs them one by
@@ -546,7 +583,8 @@ type), the goal after `⊢`, and a toolbar.
   loops). Proof tools: `goals_signatures`, `kept_goals_tooltip`, `long_goals`,
   `split`, `split_narrow`, `split_disabled`, `constructors`, `solve_lazy`,
   `lemma`, `lemma_mobile`, `lemma_pong`, `lawdef_pong`, `operators`, `opcalls`,
-  `sigs_marks_lawdef_ai`. Outputs: `verdict_bendtt`, `compiler_outputs`,
+  `sigs_marks_lawdef_ai`, `refactors` (caret per file across a reload, an
+  imported type's constructors, rename, move, a cycle refused). Outputs: `verdict_bendtt`, `compiler_outputs`,
   `heavy_demos`. Hub: `hub` (a fake package with real hashes, from
   `fixtures/make_fakehub.py`). About: `about_versions` (the versions card, its links, the copy).
   Assistant and agent: `ai_profiles`,
@@ -607,5 +645,11 @@ type), the goal after `⊢`, and a toolbar.
 - **The way back cuts annotations to their head.** `(v + w : Vec<n>)` →
   `Vec.add(v, w)` → `(v + w : Vec)`: the same term, since only the head
   names the namespace, but not the same text.
+- **Rename and move read names, not scopes.** A local variable that bears a
+  declaration's name is renamed with it (harmless: binding and uses change
+  together), and a move rewrites it as `Alias.name` (the checker then
+  refuses the move, and says why). An annotation `(x + y : Shape)` in a file
+  that keeps `Shape.add` while `Shape` moves away no longer finds the def:
+  the check refuses that move too.
 - **Signatures do not cover locals.** Variables bound by `let` or patterns show
   no type; a `?hole` gives the context.

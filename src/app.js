@@ -164,7 +164,7 @@
 
   function proj_pack() {
     return { id: state.id, name: state.name, scratch: state.scratch, updated: state.updated,
-      files: state.files, active: state.active, args: state.args, locks: state.locks || [] };
+      files: state.files, active: state.active, args: state.args, locks: state.locks || [], carets: state.carets || {} };
   }
 
   function proj_unpack(p) {
@@ -176,6 +176,7 @@
     state.active = Math.min(Math.max(0, p.active | 0), p.files.length - 1);
     state.args = typeof p.args === "string" ? p.args : "";
     state.locks = Array.isArray(p.locks) ? p.locks.filter((x) => typeof x === "string") : [];
+    state.carets = p.carets && typeof p.carets === "object" ? p.carets : {};
     store.snaps = ls_get(LS_SNAP + p.id) || [];
     if (!Array.isArray(store.snaps)) {
       store.snaps = [];
@@ -259,6 +260,7 @@
   }
 
   function store_save() {
+    caret_keep();
     state.updated = Date.now();
     clearTimeout(save_timer);
     save_timer = setTimeout(store_flush, 400);
@@ -359,13 +361,13 @@
     if (hub.files[rel] === undefined) {
       return;
     }
+    caret_keep();
     view.hub = rel;
     view.file = { name: "hub:" + rel, text: hub.files[rel], ro: true, alias: alias || "" };
     ed.ta.readOnly = true;
     files_paint();
     ed_set(view.file.text);
-    ed.box.scrollTop = 0;
-    ed.box.scrollLeft = 0;
+    caret_back("hub:" + rel, view.file.text);
     laws_set(null);
     diag_show(null);
     verdict_set("idle", t("hub_ro", rel.split("/").pop()));
@@ -1982,7 +1984,7 @@
       // Split: the variables get a box each; Match writes one match on the
       // ticked ones, a case per combination of their constructors.
       const alone = !c.gone && hole_alone(c);
-      const can = alone && c.ctx.some(([, ty]) => split_plan(ty, c.ctx) !== null);
+      const can = alone && c.ctx.some(([, ty]) => split_plan(ty, c.ctx, c.file) !== null);
       const lemming = c.lemma !== undefined;
       const picking = c.split !== undefined || lemming;
       const need = lemming ? lemma_needs(c) : null;
@@ -2073,7 +2075,7 @@
           row.append(el("label", { class: req ? "req" : "", title: req ? t("lemma_needed", k) : "" }, box,
             el("span", { class: "goal-var", text: k })));
         } else if (picking) {
-          const ok = split_plan(ty, c.ctx) !== null;
+          const ok = split_plan(ty, c.ctx, c.file) !== null;
           const box = el("input", { type: "checkbox", disabled: !ok, "aria-label": t("split_on", k) });
           box.checked = c.split.has(k);
           box.addEventListener("change", () => {
@@ -2219,15 +2221,8 @@
     if (head === "" || head === "Type" || head === "Data" || /^[a-z]/.test(head)) {
       return [];
     }
-    const out = [];
-    for (const file of state.files.map((f) => f.name).concat([null])) {
-      for (const d of decls_of(file)) {
-        if (d.kind === "ctor" && d.of === head && !out.some((x) => x.startsWith(d.name + "{"))) {
-          out.push(d.name + "{" + d.params.map((p) => hole(param_name(p))).join(", ") + "}");
-        }
-      }
-    }
-    return out;
+    const raw = (/^[A-Za-z_][\w.]*/.exec(exp) || [""])[0];
+    return ctors_for(raw, c.file).map((d) => d.name + "{" + d.params.map((p) => hole(param_name(p))).join(", ") + "}");
   }
 
   // The file with the hole replaced by a term.
@@ -2593,6 +2588,48 @@
     return line.trim() === "?" + c.name;
   }
 
+  // The constructors of the type named head, as file must write them: a
+  // type imported as S gives S.Circle{..}, the way the checker prints the
+  // type (S.Shape); a name qualified by a project file's stem goes through
+  // file's import of it; else the project's files, then Base.
+  function ctors_for(head, file) {
+    const f = state.files.find((x) => x.name === file);
+    const imps = f ? imports_of(file, f.text) : new Map();
+    const dot = head.indexOf(".");
+    let target = null;
+    let prefix = "";
+    let rest = head;
+    if (dot > 0 && imps.has(head.slice(0, dot))) {
+      target = imps.get(head.slice(0, dot));
+      prefix = head.slice(0, dot + 1);
+      rest = head.slice(dot + 1);
+    } else {
+      for (const x of state.files) {
+        const stem = x.name.replace(/\.bend$/, "").replace(/\//g, ".");
+        if (head.startsWith(stem + ".")) {
+          rest = head.slice(stem.length + 1);
+          target = x.name;
+          const alias = [...imps].find(([, v]) => v === x.name);
+          prefix = x.name === file ? "" : alias ? alias[0] + "." : "";
+          break;
+        }
+      }
+    }
+    const out = [];
+    const files = target !== null ? [target] : [file].concat(state.files.map((x) => x.name), [null]);
+    for (const src of files) {
+      for (const d of decls_of(src)) {
+        if (d.kind === "ctor" && d.of === rest && !out.some((c) => c.name === prefix + d.name)) {
+          out.push({ name: prefix + d.name, params: d.params });
+        }
+      }
+      if (out.length > 0) {
+        break;
+      }
+    }
+    return out;
+  }
+
   // The type's head name, the file's own namespace stripped.
   function type_head(ty) {
     let head = (/^[A-Za-z_][\w.]*/.exec(ty.trim()) || [""])[0];
@@ -2616,7 +2653,7 @@
 
   // The cases to write for a type, as [pattern, tag]; null when the type
   // is not one to split on. A pair answers a single binding instead.
-  function split_plan(ty, ctx) {
+  function split_plan(ty, ctx, file) {
     const taken = new Set(ctx.map(([k]) => k));
     const text = ty.trim();
     if (split_top(text.replace(/\s*&\s*/g, " & ")).length === 1 && / & /.test(text)) {
@@ -2635,19 +2672,12 @@
     if (head === "" || head === "Type" || head === "Data" || /^[a-z]/.test(head)) {
       return null;
     }
-    const ctors = [];
-    for (const file of state.files.map((f) => f.name).concat([null])) {
-      for (const d of decls_of(file)) {
-        if (d.kind === "ctor" && d.of === head && !ctors.some((c) => c.name === d.name)) {
-          ctors.push(d);
-        }
-      }
-    }
+    const ctors = ctors_for((/^[A-Za-z_][\w.]*/.exec(text) || [""])[0], file);
     if (ctors.length === 0) {
       return null;
     }
     return { cases: ctors.map((d) => [d.name + "{" + d.params.map((p) => fresh_name(param_name(p), taken)).join(", ") + "}",
-      d.name.toLowerCase().replace(/[^a-z0-9]/g, "_")]) };
+      d.name.slice(d.name.lastIndexOf(".") + 1).toLowerCase().replace(/[^a-z0-9]/g, "_")]) };
   }
 
   const SPLIT_CAP = 64;
@@ -2663,7 +2693,7 @@
     const plans = [];
     for (const v of vars) {
       const ty = (ctx.find(([k]) => k === v) || [])[1];
-      const plan = ty === undefined ? null : split_plan(ty, ctx);
+      const plan = ty === undefined ? null : split_plan(ty, ctx, c.file);
       if (plan === null) {
         goals_paint();
         return;
@@ -3263,6 +3293,13 @@
     if (kind !== null) {
       row.append(el("button", { class: "btn", type: "button", text: t(kind === "split" ? "split_law" : "merge_law"),
         onclick: () => { close(); refactor(d, file_now().name); } }));
+    }
+    // a project file's declaration: renamed everywhere, or moved elsewhere
+    if (ref_ok(d)) {
+      row.append(el("button", { class: "btn", type: "button", text: t("rn_btn"), onclick: () => { close(); rename_sheet(d); } }));
+      if (d.kind !== "ctor" && state.files.filter((x) => x.name.endsWith(".bend")).length > 0) {
+        row.append(el("button", { class: "btn", type: "button", text: t("mv_btn"), onclick: () => { close(); move_sheet(d); } }));
+      }
     }
     // operators and calls, the one into the other
     const f = file_now();
@@ -4391,13 +4428,53 @@
     }
   }
 
+  // Where the caret was in each file the last time it was open, and how far
+  // the editor was scrolled: kept with the project (a hub module's for the
+  // visit only), given back when the file opens again.
+  function caret_keep() {
+    const f = file_now();
+    if (!f || ed.ta.value !== f.text) {
+      return;
+    }
+    const at = [ed.ta.selectionStart, ed.ta.selectionEnd, Math.round(ed.box.scrollTop), Math.round(ed.box.scrollLeft)];
+    if (view.hub !== null) {
+      ed.hub_carets = ed.hub_carets || {};
+      ed.hub_carets["hub:" + view.hub] = at;
+    } else {
+      state.carets = state.carets || {};
+      state.carets[f.name] = at;
+    }
+  }
+
+  function caret_back(name, text) {
+    const c = name.startsWith("hub:") ? (ed.hub_carets || {})[name] : (state.carets || {})[name];
+    if (!Array.isArray(c)) {
+      ed.box.scrollTop = 0;
+      ed.box.scrollLeft = 0;
+      return;
+    }
+    const put = () => {
+      ed.ta.setSelectionRange(Math.min(c[0] | 0, text.length), Math.min(c[1] | 0, text.length));
+      ed.box.scrollTop = c[2] | 0;
+      ed.box.scrollLeft = c[3] | 0;
+    };
+    put();
+    // a click that switched files ends by collapsing the selection of an
+    // editor that had the focus before: put it back once the click is over
+    requestAnimationFrame(() => {
+      if (file_now() && file_now().name === name && ed.ta.value === text) {
+        put();
+      }
+    });
+  }
+
   function files_pick(i) {
+    caret_keep();
     hub_leave();
     state.active = i;
     files_paint();
     ed_set(file_now().text);
-    ed.box.scrollTop = 0;
-    ed.box.scrollLeft = 0;
+    caret_back(file_now().name, file_now().text);
     verdict_set("idle", "…");
     diag_show(null);
     store_save();
@@ -4446,6 +4523,10 @@
         close();
         files_pick(state.files.length - 1);
       } else {
+        if (state.carets && state.carets[state.files[i].name]) {
+          state.carets[name] = state.carets[state.files[i].name];
+          delete state.carets[state.files[i].name];
+        }
         state.files[i].name = name;
         close();
         files_pick(i);
@@ -5399,6 +5480,7 @@
   }
 
 /*__OPCALL__*/
+/*__MOVES__*/
 /*__AGENT__*/
   // Init
   // ====
@@ -5430,6 +5512,7 @@
   ed_measure();
   files_paint();
   ed_set(file_now().text);
+  caret_back(file_now().name, file_now().text);
   panel_set("closed");
   tab_set("out");
   run_button(false);
