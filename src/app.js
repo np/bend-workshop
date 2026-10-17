@@ -1408,6 +1408,11 @@
         }
         e.preventDefault();
         screen_key(key_code(e), type === "keydown");
+        // a printable character is text too, as the native window sends it
+        const cp = [...e.key].length === 1 ? e.key.codePointAt(0) : 0;
+        if (type === "keydown" && !e.altKey && cp >= 0x20 && (cp < 0x7f || cp >= 0xa0)) {
+          screen_send([4, e.key]);
+        }
       });
     }
     const c = scr.canvas;

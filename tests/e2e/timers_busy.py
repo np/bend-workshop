@@ -1,4 +1,4 @@
-# The JS loop of 2.0.35 fires a due timer while computations keep it busy
+# The JS loop (since 2.0.35) fires a due timer while computations keep it busy
 # (Bend's tests/io/within_busy.bend): run as is (official loop, in a worker),
 # then with a window open first (the page's async loop for windows).
 import time, json
@@ -37,7 +37,9 @@ with sync_playwright() as p:
             time.sleep(0.25)
         time.sleep(0.5)
         lines = [l for l in page.locator("#log").inner_text().split("\n") if l.strip()]
-        print(label.ljust(16), "| verdict:", state, "| output:", [l for l in lines if l in ("deadline", "slept", "pipeline done", "no window")], "|", lines[-1][:70])
+        seen = [l for l in lines if l in ("deadline", "slept", "pipeline done", "no window")]
+        print(label.ljust(16), "| verdict:", state, "| output:", seen, "|", lines[-1][:70])
+        assert "deadline" in seen and "pipeline done" in seen, label + ": the loop did not fire the timer and finish"
         for e in errs: print("!!", e[:200])
         page.close()
     b.close()

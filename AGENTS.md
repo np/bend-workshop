@@ -6,7 +6,7 @@ is no server. This file records the design choices made so far, so that whoever
 works on the page next keeps them, or changes them on purpose.
 
 - Shipped as one standalone file, `bend-workshop.html` (= `dist/index.html`)
-- Tracks the latest Bend: currently 2.0.35, commit a950fd6 of bendlang/bend
+- Tracks the latest Bend: currently 2.0.37, commit e5527d5 of bendlang/bend
 - Owner's priorities: proof work on a phone, staying current with Bend, no
   surprises (privacy, lost work, silent failures)
 
@@ -153,21 +153,31 @@ Settings arguments, after the program name.
 **Windows.** The official JS IO loop never yields, so a worker running it
 cannot hear the page. A program that opens a `Window` therefore gets
 `runner-tail.js`: an async copy of `io_run` that yields between frames, and its
-own `Window.open/frame/set_title/close`. Like `io_run` since 2.0.35, the copy
-fires a due timer even while computations keep the loop busy (it looks at
-its waits, kept in deadline order by `io_park_on`, at each yield). Frames are quadtrees rasterized as
+own `Window.open/frame/set_title/close`. It follows `io_run` as of 2.0.37:
+an effect is a plain function in `$0eff`, called as
+`$0eff[op.$](...args, kont)`; one that waits parks itself with `io_park_on`
+and answers `undefined`, and a due wait calls its `more()` and resumes `k`
+with what it answers; `Exit` and `Halt` end the loop, a code past 255 as an
+error. `io_push` and `io_park_on` work on the runtime's `io_active`, which
+the tail, being in the program's scope, sets for the copy. Like `io_run`,
+the copy fires a due timer even while computations keep the loop busy (it
+looks at its waits, kept in deadline order, at each yield). Frames are quadtrees rasterized as
 `window_pix` does (2^k square, tl/tr/bl/br, `0xRRGGBB`), posted with a pool of
 transferred buffers, at 60 Hz. Key codes follow the native table (lower-case
 character, arrows from 63232, modifiers past 65536); a held key repeats as
-up-then-down, like X11. On the page, without workers, the same loop runs
+up-then-down, like X11. A printable character also comes as a `Text`
+event after its `Key`, as the native window sends typed text. On the page, without workers, the same loop runs
 cooperatively and Stop is a flag read each frame.
 
 > **Coupling.** `runner-prelude.js` and `runner-tail.js` mirror internals of
-> the JS runtime in `comp.ts`: `io_run`, `io_park_on`, `io_push`, `io_wake`,
-> the `$0eff` table keyed by def name, `BEND_SYS.select`, how `Bool` is
-> represented, how the loop orders its waits and when it looks at them. Check
-> them first on every Bend upgrade: `timers_busy` runs Bend's own
-> `tests/io/within_busy.bend` through both loops.
+> the JS runtime in `comp.ts`: `io_run`, `io_park_on`, `io_push`,
+> `io_active`, the `$0eff` table keyed by def name (a function per effect
+> since 2.0.37), `show_val`'s arguments, `BEND_SYS.select`, how `Bool` is
+> represented, the `Event` constructors, how the loop orders its waits and
+> when it looks at them. Check them first on every Bend upgrade:
+> `window_demos` fails when no window opens, and `timers_busy` runs Bend's
+> own `tests/io/within_busy.bend` through both loops and fails unless the
+> timer fires and the pipeline ends.
 
 ## Checking (entry.ts)
 
@@ -580,7 +590,7 @@ type), the goal after `⊢`, and a toolbar.
   `fonts_off`, `languages`, `portuguese`. Windows: `window_demos`,
   `window_mobile`, `window_iframe_csp`, `window_no_worker`,
   `window_page_mode_mobile`, `timers_busy` (Bend's `within_busy` through both
-  loops). Proof tools: `goals_signatures`, `kept_goals_tooltip`, `long_goals`,
+  loops), `window_text` (typed text as `Text` events, worker and page). Proof tools: `goals_signatures`, `kept_goals_tooltip`, `long_goals`,
   `split`, `split_narrow`, `split_disabled`, `constructors`, `solve_lazy`,
   `lemma`, `lemma_mobile`, `lemma_pong`, `lawdef_pong`, `operators`, `opcalls`,
   `sigs_marks_lawdef_ai`, `refactors` (caret per file across a reload, an
@@ -617,7 +627,11 @@ type), the goal after `⊢`, and a toolbar.
    - new Node modules imported by `bend.ts`, `comp.ts` or `safe.ts` (each needs
      a shim)
 3. `npm run e2e`; the Window scripts (`window_*`, `timers_busy`) matter most. In 2.0.32 → 2.0.35, the one change the page had to follow was the
-   JS loop's (timers fire while busy).
+   JS loop's (timers fire while busy). In 2.0.35 → 2.0.37 the JS loop was
+   rewritten (effects as plain functions that park themselves, no
+   `io_wake`, `io_active`), and windows got a `Text` event: the async copy
+   and the tail followed. A `Nat` now crosses to JS as a plain number; the
+   page passes none.
 4. Update the examples if Base or the syntax moved, then write the new full
    hash in `BEND_COMMIT` and push: the workflow publishes.
 

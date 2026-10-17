@@ -30,7 +30,7 @@ with sync_playwright() as p:
             page.wait_for_selector(".tab[data-tab=screen]:not([hidden])", timeout=60000)
         except Exception as e:
             print("== ", d, "no window:", page.locator("#pane-out .out").inner_text()[-400:])
-            continue
+            raise AssertionError(d + ": no window opened")
         print(f"== {d}: window after {time.time() - t0:.1f}s |", page.inner_text("#screen-info"))
         time.sleep(2.0)
         print("   info:", page.inner_text("#screen-info"), "| canvas:", canvas_stats(page))

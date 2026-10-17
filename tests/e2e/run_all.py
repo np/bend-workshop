@@ -13,7 +13,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 TESTS = [
     "errors_goals_persist", "themes_csp", "iframe_sandbox", "settings_files_base", "typing_guide_effect_hub",
     "goals_signatures", "kept_goals_tooltip", "heavy_demos", ("window_demos", "app_triangle_2d"), "window_mobile",
-    "window_iframe_csp", "window_no_worker", "window_page_mode_mobile", "projects_zip", "export_viewer", "no_storage",
+    "window_iframe_csp", "window_no_worker", "window_page_mode_mobile", "window_text", "projects_zip", "export_viewer", "no_storage",
     "languages", "sigs_marks_lawdef_ai", "split", "constructors", "solve_lazy", "verdict_bendtt", "split_narrow",
     "split_disabled", "long_goals", "lemma", "lemma_mobile", "lemma_pong", "lawdef_pong", "network_audit", "fonts_off",
     "hub", "operators", "ai_profiles", "agent_claude", "agent_apis", "agent_no_worker", "agent_holes_export",

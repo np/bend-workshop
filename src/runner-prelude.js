@@ -189,30 +189,37 @@
         var ev = e[0] === 0 ? { $: "Key", code: e[1] >>> 0, down: __bool(e[2]) }
           : e[0] === 1 ? { $: "Mouse", x: e[1] >>> 0, y: e[2] >>> 0, button: e[3] >>> 0, down: __bool(e[4]) }
           : e[0] === 2 ? { $: "Move", x: e[1] >>> 0, y: e[2] >>> 0 }
+          : e[0] === 4 ? { $: "Text", text: String(e[1]) }
           : { $: "Close" };
         list = { $: "Con", head: ev, tail: list };
       }
       return list;
     },
-    // io_run (2.0.35), awaiting where io_wait blocked: nothing here is ever
-    // readable, so a wait is a deadline or a dead end. As there, a timer
-    // due fires even while computations keep the loop busy. rt holds the
-    // runtime's own helpers; rt.park keeps the waits in deadline order.
+    // io_run (2.0.37), awaiting where io_wait blocked: nothing here is ever
+    // readable, so a wait is a deadline or a dead end. As there, a wait
+    // that comes due fires even while computations keep the loop busy, an
+    // effect is $0eff[op.$](...args, kont), and one that waits parks itself
+    // (rt.park keeps the waits in deadline order) and answers undefined;
+    // a due wait calls its more(), and resumes k with what it answers. rt
+    // holds the runtime's own helpers, and rt.activate sets its io_active.
     run: async function (main, rt) {
       var io = { runs: [], live: 0, waits: [] };
+      rt.activate(io);
       globalThis.BEND_IO = io;
       var tick = performance.now();
       var fire = function () {
         var now = performance.now();
-        if (io.waits.length === 0 || !(io.waits[0].at <= now)) {
+        var due = function (w) { return w.at !== undefined && w.at <= now; };
+        if (!io.waits.some(due)) {
           return;
         }
-        io.waits = io.waits.filter(function (w) {
-          var ready = w.at <= now;
-          if (ready) {
-            rt.push(rt.wake, w, false);
+        var todo = io.waits;
+        io.waits = todo.filter(function (w) { return !due(w); });
+        todo.filter(due).forEach(function (w) {
+          var x = w.more();
+          if (x !== undefined) {
+            rt.push(w.k, x, false);
           }
-          return !ready;
         });
       };
       try {
@@ -235,12 +242,7 @@
               rt.errs("bend: deadlock: every computation waits on a channel");
               return 1;
             }
-            var soon = Infinity;
-            for (var i = 0; i < io.waits.length; i++) {
-              if (io.waits[i].at !== undefined) {
-                soon = Math.min(soon, io.waits[i].at);
-              }
-            }
+            var soon = io.waits.reduce(function (m, w) { return w.at !== undefined ? Math.min(m, w.at) : m; }, Infinity);
             if (soon === Infinity) {
               rt.errs("bend: this wait needs a file or a socket, and the browser has neither");
               return 1;
@@ -262,19 +264,21 @@
               io.live -= 1;
               break;
             }
-            if (op.$ === "Halt") {
-              rt.errs(op.message);
+            if (op.$ === "Halt" || op.$ === "Exit") {
+              if (op.$ === "Halt") {
+                rt.errs(op.message);
+              }
+              if (op.code > 255) {
+                rt.errs("bend: exit code must be in 0..255");
+                return 1;
+              }
               return op.code;
             }
-            var need = op.need ? op.need() || {} : {};
-            if (need.time || need.read) {
-              var it = op;
-              var more = function () { return it.run.apply(null, it.args.concat([it.kont])); };
-              rt.park(need.read ? it.args[0] : undefined, false, it.kont, more,
-                need.read ? undefined : performance.now() + Number(it.args[0]));
-              break;
+            var run = rt.eff[op.$];
+            if (run === undefined) {
+              throw "bend: no effect registers " + op.$;
             }
-            var x = op.run.apply(null, op.args.concat([op.kont]));
+            var x = run.apply(null, op.args.concat([op.kont]));
             if (x === undefined) {
               break;
             }
@@ -291,6 +295,8 @@
         }
         rt.errs("bend: runtime fail-stop");
         return 1;
+      } finally {
+        rt.activate(undefined);
       }
     }
   };
