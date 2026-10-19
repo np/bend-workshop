@@ -1,6 +1,24 @@
 (function () {
   "use strict";
 
+  // The page as it was served, for "Download this page": read before the
+  // app changes anything (its script is the page's last), without the font
+  // links the head's own script adds.
+  const PAGE_SRC = (() => {
+    try {
+      const root = document.documentElement.cloneNode(true);
+      for (const id of ["gf-pre1", "gf-pre2", "gf-css"]) {
+        const n = root.querySelector("#" + id);
+        if (n) {
+          n.remove();
+        }
+      }
+      return "<!doctype html>\n" + root.outerHTML;
+    } catch (e) {
+      return null;
+    }
+  })();
+
   // Helpers
   // =======
 
@@ -4794,8 +4812,9 @@
       const local = v.getUint32(at + 42, true);
       const name = dec.decode(new Uint8Array(buf, at + 46, nlen));
       at += 46 + nlen + xlen + clen;
-      if (name.endsWith("/") || name.startsWith("__MACOSX/") || csize > 4e6
-        || (all ? /\.(png|jpe?g|gif|zip|gz|wasm|bin|o|a|so|dylib|exe)$/i.test(name) : !/\.(bend|js)$/.test(name))) {
+      const memo = !all && /(^|\/)\.workshop\/agent-memory\.json$/.test(name);
+      if (name.endsWith("/") || name.startsWith("__MACOSX/") || (csize > 4e6 && !memo)
+        || (all ? /\.(png|jpe?g|gif|zip|gz|wasm|bin|o|a|so|dylib|exe)$/i.test(name) : !/\.(bend|js)$/.test(name) && !memo)) {
         continue;
       }
       const from = local + 30 + v.getUint16(local + 26, true) + v.getUint16(local + 28, true);
@@ -4815,10 +4834,12 @@
     if (all) {
       return { folder: "", files: out };
     }
+    const mi = out.findIndex((f) => /(^|\/)\.workshop\/agent-memory\.json$/.test(f.name));
+    const memory = mi < 0 ? null : out.splice(mi, 1)[0].text;
     // a single top folder is the project's own: its files are the project
     const top = out.length > 0 && out.every((f) => f.name.includes("/")) ? out[0].name.split("/")[0] + "/" : "";
     const flat = top !== "" && out.every((f) => f.name.startsWith(top));
-    return { folder: flat ? top.slice(0, -1) : "",
+    return { folder: flat ? top.slice(0, -1) : "", memory,
       files: out.map((f) => ({ name: flat ? f.name.slice(top.length) : f.name, text: f.text })) };
   }
 
@@ -4850,13 +4871,20 @@
 
   // The project as a zip, or as one .json file, which Import reads too. The
   // viewer may turn zips off: then it says so, and the .json is one tap.
-  async function proj_export(fmt) {
+  // The agent's memory goes along when asked (and not empty): in the zip as
+  // .workshop/agent-memory.json, a hidden folder bend never reads; in the
+  // .json as its memory field. Import gives it to the new project.
+  const MEM_ZIP = ".workshop/agent-memory.json";
+
+  async function proj_export(fmt, with_mem) {
     const stem = file_stem(state.name);
+    const m = with_mem ? await mem_open(state.id) : null;
+    const memo = m && m.msgs.length ? { format: "bend-workshop/memory/1", msgs: m.msgs, nodes: m.nodes, view: m.view, made: m.made } : null;
     try {
       if (fmt === "json") {
-        await save_file(stem + ".json", JSON.stringify({ bend_project: 1, name: state.name, files: state.files }, null, 1));
+        await save_file(stem + ".json", JSON.stringify({ bend_project: 1, name: state.name, files: state.files, memory: memo || undefined }, null, 1));
       } else {
-        await save_file(stem + ".zip", zip_make(state.files, stem));
+        await save_file(stem + ".zip", zip_make(memo ? state.files.concat([{ name: MEM_ZIP, text: JSON.stringify(memo) }]) : state.files, stem));
       }
     } catch (e) {
       toast(save_error(e));
@@ -4879,6 +4907,17 @@
     let hub_added = 0;
     let files = [];
     let want = "";
+    let memo = null;
+    const mem_take = (x) => {
+      try {
+        const m = typeof x === "string" ? JSON.parse(x) : x;
+        if (!memo && m && Array.isArray(m.msgs) && Array.isArray(m.view) && m.nodes && typeof m.nodes === "object") {
+          memo = { msgs: m.msgs, nodes: m.nodes, view: m.view, made: m.made | 0 };
+        }
+      } catch (e) {
+        memo = memo || null;
+      }
+    };
     try {
       for (const file of list) {
         if (/\.zip$/i.test(file.name)) {
@@ -4890,6 +4929,9 @@
           }
           const got = await zip_read(await file.arrayBuffer());
           files = files.concat(got.files);
+          if (got.memory) {
+            mem_take(got.memory);
+          }
           want = want || got.folder || file.name.replace(/\.zip$/i, "");
         } else if (/\.json$/i.test(file.name)) {
           const got = JSON.parse(await file.text());
@@ -4898,6 +4940,9 @@
           }
           files = files.concat(got.files);
           want = want || got.name || "";
+          if (got.memory) {
+            mem_take(got.memory);
+          }
         } else if (/\.(bend|js)$/i.test(file.name)) {
           files.push({ name: file.name, text: await file.text() });
           want = want || (list.length === 1 ? file.name.replace(/\.\w+$/, "") : "");
@@ -4920,6 +4965,10 @@
     }
     files.sort((x, y) => Number(y.name === "main.bend") - Number(x.name === "main.bend"));
     proj_new(want || t("import_name"), files, false);
+    if (memo) {
+      mem_store.cache.set(state.id, memo);
+      mem_flush(state.id);
+    }
   }
 
   function when(ms) {
@@ -4994,6 +5043,15 @@
       close();
       proj_import(list);
     });
+    // the agent's memory along with an export: shown when there is one
+    const with_mem = el("input", { type: "checkbox" });
+    with_mem.checked = true;
+    const mem_label = el("span", {});
+    const mem_row = el("label", { class: "check", hidden: true }, with_mem, mem_label);
+    mem_open(state.id).then((m) => {
+      mem_row.hidden = m.msgs.length === 0;
+      mem_label.textContent = t("export_memory", m.msgs.length);
+    });
     const hist = el("div", { class: "snaps" });
     for (const snap of store.snaps.slice().reverse()) {
       hist.append(el("div", { class: "snap" },
@@ -5005,9 +5063,10 @@
       el("label", {}, t("proj_open"), name,
         el("small", { text: count_files(state.files.length) + t("modified", when(state.updated))
           + (state.scratch ? t("scratch_note") : "") })),
+      mem_row,
       el("div", { class: "row" },
-        el("button", { class: "btn", type: "button", text: t("export_zip"), onclick: () => { close(); proj_export("zip"); } }),
-        el("button", { class: "btn", type: "button", text: t("export_json"), onclick: () => { close(); proj_export("json"); } }),
+        el("button", { class: "btn", type: "button", text: t("export_zip"), onclick: () => { close(); proj_export("zip", with_mem.checked); } }),
+        el("button", { class: "btn", type: "button", text: t("export_json"), onclick: () => { close(); proj_export("json", with_mem.checked); } }),
         el("button", { class: "btn", type: "button", text: t("duplicate"), onclick: () => {
           close();
           proj_new(state.name + t("copy_suffix"), state.files, false, t("copy_opened"));
@@ -5420,7 +5479,34 @@
       el("div", { class: "row ver-links" },
         el("a", { class: "btn", href: WORKSHOP.repo, target: "_blank", rel: "noopener", html: GITHUB_ICON + " " + esc(t("ver_source")) }),
         el("a", { class: "btn", href: issue, target: "_blank", rel: "noopener", text: t("ver_issue") }),
-        el("button", { class: "btn", type: "button", text: t("ver_copy"), onclick: () => copy_text(versions_text()) })));
+        el("button", { class: "btn", type: "button", text: t("ver_copy"), onclick: () => copy_text(versions_text()) }),
+        el("button", { class: "btn", type: "button", text: t("page_download"), onclick: page_download })));
+  }
+
+  // This page as one file, to keep or hand out: on a web host, the file as
+  // served (one request to the page's own address); else, from file:// or
+  // the viewer, the page as it was before the app ran.
+  async function page_download() {
+    let src = PAGE_SRC;
+    if (/^https?:$/.test(location.protocol) && !(window.claude && typeof window.claude.use === "function")) {
+      try {
+        const r = await fetch(location.href, { cache: "force-cache" });
+        if (r.ok) {
+          src = await r.text();
+        }
+      } catch (e) {
+        src = PAGE_SRC;
+      }
+    }
+    if (!src) {
+      toast(t("export_fail"));
+      return;
+    }
+    try {
+      await save_file("bend-workshop-" + WORKSHOP.commit.replace(/\+$/, "") + ".html", new Blob([src], { type: "text/html" }));
+    } catch (e) {
+      toast(save_error(e));
+    }
   }
 
   function about_sheet() {

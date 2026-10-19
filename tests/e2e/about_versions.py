@@ -21,7 +21,7 @@ with sync_playwright() as p:
         print(loc, "|", text.replace("\n", " | "))
         assert bend in text.replace("\n", " "), "Bend's version missing"
         assert any("/bendlang/bend/commit/" in h for h in hrefs) and any(h.endswith("/issues/new") or "/issues/new?" in h for h in hrefs)
-        page.locator(".ver-links button").click(); time.sleep(0.3)
+        page.locator(".ver-links button").first.click(); time.sleep(0.3)
         clip = page.evaluate("navigator.clipboard.readText()")
         print("  copied:", clip.replace("\n", " / "), "| width:", page.evaluate("document.documentElement.scrollWidth"))
         assert "Bend " in clip and page.evaluate("document.documentElement.scrollWidth") <= 360

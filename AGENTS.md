@@ -110,7 +110,11 @@ was built from, with `+` when the tree had uncommitted changes, and that
 commit's date, not the build's, so the build stays reproducible), Bend's
 version and commit, each linked to its commit on GitHub, then *Source on
 GitHub*, *Report an issue* (a new issue, its body holding the versions, no
-more) and *Copy the versions*. `build_html.mjs` reads the commit with git
+more), *Copy the versions*, and *Download this page (.html)*: on a web host
+the file as served (one request to the page's own address, on the tap);
+from `file://` or in the viewer, the page as it was before the app ran (read
+by the app's first statement, its script being the page's last, without the
+font links the head adds), which opens alone too. `build_html.mjs` reads the commit with git
 (`dev` outside a checkout) and the repository from `GITHUB_REPOSITORY`, else
 the `origin` remote, else `np/bend-workshop`. The header has no room for a
 GitHub icon at 360 px, hence the card.
@@ -382,13 +386,17 @@ type), the goal after `⊢`, and a toolbar.
 - **Export.** A zip of the plain files in one folder, so that
   `bend main.bend` runs once unzipped. The writer only stores (no compression);
   the reader inflates through `DecompressionStream`. *Export as .json* gives
-  the same project in one file. Following the viewer's `downloads` contract,
+  the same project in one file. The agent's memory goes along unless
+  unticked (the box shows only when there is one): in the zip as
+  `.workshop/agent-memory.json`, a hidden folder bend never reads, in the
+  `.json` as `memory` (format `bend-workshop/memory/1`). Following the viewer's `downloads` contract,
   a refused format is reported, not silently swapped for another: the user
   picks the other button. Allowed there: `json`, `md`, `txt`, and `zip` unless
   the platform has turned its second list off.
 - **Import.** `.bend`, `.js`, `.zip` or `.json`. A zip of `~/.bend/lib` (it has
   `0x<hash>/` or `names/` entries) goes to the hub cache instead, each package
-  checked against its manifest (sha256).
+  checked against its manifest (sha256). A memory found in a zip or a
+  `.json` becomes the new project's.
 
 ## Hub
 
@@ -656,7 +664,10 @@ type), the goal after `⊢`, and a toolbar.
   quick tier past a small budget, the prompt cap, the Memory view, forget
   and Undo), `agent_memory_api` (Haiku summaries with a simulated
   Anthropic server, a long turn started again from the memory),
-  `unii_handoff` (the message, UniiChat opened, files taken back, Undo).
+  `unii_handoff` (the message, UniiChat opened, files taken back, Undo),
+  `export_memory_page` (the memory in the zip and the .json, unticked,
+  imported back; the page downloaded as served, and from `file://`, each
+  opening alone).
 - **Simulating the environment.** `serve.py` takes a CSP to imitate the viewer.
   `?probe_ms=1` forces the deferred Constructors state. `frame_page()` puts a
   sandboxed iframe in front of the page: an opaque origin with no storage.
