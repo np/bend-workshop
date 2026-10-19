@@ -54,6 +54,7 @@ These shape every feature. Break one only with a reason written down here.
 
 ```
 build.sh, package.json, BEND_COMMIT, AGENTS.md, README.md, .gitignore
+third_party/  UniiChat/ (its license, and what memory.js adapts from it)
 .github/      workflows/pages.yml (build, test, publish), dependabot.yml
 scripts/      gen_assets.mjs, gen_examples.mjs, build_html.mjs
 core/         entry.ts, shim/        (the bundle around Bend)
@@ -72,10 +73,11 @@ tests/e2e/shots/, tests/e2e/fixtures/fakehub/  what the tests write (ignored)
 | `scripts/gen_assets.mjs` | Writes `gen/assets.ts` (`base.bend`, the effects' `.js`, the operator table read from `bend.ts`, version and commit) and `gen/c_effects.json` (the effects' `.c`/`.h`, for the C output only) |
 | `scripts/gen_examples.mjs` | Writes `gen/examples.json`: guide snippets, demos and `ex/` files, titles, notes and groups in every language |
 | `build.sh` | esbuild → `dist/bend-core.js` (IIFE global `BendCore`) |
-| `scripts/build_html.mjs` | Renders `GUIDE.md`, compresses `gen/c_effects.json` (deflate-raw, base64), splices `opcall.js`, `moves.js` and `agent.js` into `app.js`, fills `src/index.template.html` → `dist/index.html` |
+| `scripts/build_html.mjs` | Renders `GUIDE.md`, compresses `gen/c_effects.json` (deflate-raw, base64), splices `opcall.js`, `moves.js`, `memory.js` and `agent.js` into `app.js`, fills `src/index.template.html` → `dist/index.html` |
 | `src/app.js` | The whole interface, one IIFE, sectioned by `// Name` headers |
 | `src/opcall.js` | Operators ⇄ calls: the infix table's climbing, the namespace walk, printing with the fewest parentheses; spliced at `/*__OPCALL__*/` |
 | `src/moves.js` | Rename and move: the name scan, the plans (pure, tested in Node), the check before writing, their sheets; spliced at `/*__MOVES__*/` |
+| `src/memory.js` | The agent's memory, adapted from UniiChat: the chat, its tree of one-line summaries, the view and its merges, zoom, search, IndexedDB; spliced at `/*__MEMORY__*/` |
 | `src/agent.js` | The agent mode: tools, locks, the two loops, the trace, past sessions, its pane; spliced at `/*__AGENT__*/` |
 | `src/i18n.js` | `window.BEND_LANGS = { en, fr, pt }`; values are strings or functions |
 | `src/index.template.html` | The page's markup, with one About per language (`about-en`, `about-fr`, `about-pt`) |
@@ -83,7 +85,7 @@ tests/e2e/shots/, tests/e2e/fixtures/fakehub/  what the tests write (ignored)
 | `src/runner-prelude.js` | The host a compiled program expects (process, `require("fs")`, `BEND_SYS`), plus the Window display loop |
 | `src/runner-tail.js` | Appended after a compiled program that opens a Window: replaces `io_exit` and the `Window.*` effects |
 | `ex/` | Programs written for the page: FizzBuzz, a JS foreign effect, the bounty |
-| `tests/node/` | `examples`, `guide`, `opcall`, `moves`, `i18n` (in `npm test`); `core` (a quick look at the bundle); `run` (the harness the others share) |
+| `tests/node/` | `examples`, `guide`, `opcall`, `moves`, `memory`, `i18n` (in `npm test`); `core` (a quick look at the bundle); `run` (the harness the others share) |
 | `tests/e2e/` | One Playwright script per feature, named for it; `serve.py` serves `dist/` with an optional CSP and gives `shot()` and `fixture()`; `run_all.py` runs them |
 
 `../bend` must be a clone of bendlang/bend at the commit in `BEND_COMMIT`
@@ -433,7 +435,8 @@ type), the goal after `⊢`, and a toolbar.
   kind, line, and for a constructor its type; Base past 300 symbols answers
   with its namespaces and asks for a prefix), `signature` (a name's type alone,
   as the signature bar writes it, with the law of a def proven by one),
-  `lookup` (the whole declaration as the signature bar resolves it), `guide` (a
+  `lookup` (the whole declaration as the signature bar resolves it), `zoom`
+  and `search` (its memory, below), `guide` (a
   section by title; titles are found outside code fences, since Bend comments
   start with `#` too), `list_holes` (every `?name` in the project: file, line,
   enclosing def, whether the agent may fill it and why not, and its goal and
@@ -452,30 +455,70 @@ type), the goal after `⊢`, and a toolbar.
   code at the hole's indentation itself, and only the session's holes are
   accepted. By default the code may leave sub-holes, which join the session.
   The option "each fill must close its goal" refuses code that holds a `?hole`.
+- **Memory** (`memory.js`, adapted from UniiChat's `Memory.ts` and
+  `prompt.txt`, Apache-2.0, `third_party/UniiChat/`). Each project has one
+  chat with the agent, kept forever, across sessions: the user's words
+  (a session's task, a resumption's note), the agent's replies, each tool
+  call with what it returned, and the page's notes (a session's start with
+  its settings, its end with the final check, an undo, files taken back
+  from UniiChat). Every message is kept whole (cut at 30,000 characters).
+  Over them grows a binary tree of lines of at most 512 bytes, each named
+  by what it covers (`id+n`). Every call gets the *view*: lines covering
+  the whole chat, oldest first, recent ones one message each, older ones
+  more. A new message appends its line (itself when short, else its
+  beginning and "(zoom for all)"). Past the profile's `memory` budget, the
+  most due sibling pairs merge, `(T + 1) / 2^l - i` as in UniiChat (age
+  from a pair's last message, in halves), down to half: between two batches
+  the view only grows at its end, so a cached prompt stays valid. A merge
+  whose halves fit on one line is their join, free; else the compactor
+  writes it, a cheap model given the messages the line covers (up to
+  `ctx` bytes), UniiChat's instructions, and a ruler, asked again while
+  too long, the shortest kept, the join cut to fit with no answer. The
+  compactor is Claude's quick tier in the viewer; with an API, the
+  profile's *model for the memory's summaries* (Haiku for Anthropic, else
+  the chat's model). Unlike UniiChat, a message's own line is not
+  summarized until a merge takes it in: no call is made while the view
+  fits. `zoom(id, n)` opens a line into its two halves, `zoom(id, 1)` gives a
+  message whole, and `search(text)` finds messages. The chat lives in
+  IndexedDB (database `bend-workshop`, store `chats`, by project id);
+  without it, for the page's life. The Agent tab's *Memory* view shows the
+  view line by line, each opening down to its messages, and *Forget* clears
+  it, with Undo.
 - **Loops.** With Claude in the viewer, a call allows a handful of tool rounds
-  and 256 KiB of text. A session is therefore a chain of calls. Each starts
-  from a brief: the rules, the task, the project as it stands (files inline
-  up to the profile's limit), two sections of the guide (Syntax Reference,
-  Laws and Proofs), and past the first call a journal: the message that
-  ended each earlier call (the latest first in line for room), the last tool
-  calls with what each returned (a repeated read kept once, a read of a
-  quoted project file not repeated), and the `NEXT:` plan the last call was
-  asked to leave before `STATUS: continue`. A rule tells it it is continuing,
-  not starting: no survey of the project again, start from the plan. Older
-  tool calls, then the quoted files, give way when the brief would pass what
-  `sample.limits()` reports (`maxPromptBytes`, 256 KiB today) less 20 KB.
-  Every tool round of a call re-reads the whole prompt on the user's account,
-  so the defaults stay well under that (about 100 KB at worst). The chain goes on while the agent ends with `STATUS: continue` and
-  made at least one call. With an API, the page runs the loop itself
-  (Anthropic `tool_use`/`tool_result` with the system cached; OpenAI
-  `tool_calls`/`tool`), the full guide in the system prompt.
+  and 256 KiB of text. A session is therefore a chain of calls, each from a
+  fresh prompt: the rules, two sections of the guide (Syntax Reference,
+  Laws and Proofs), the memory's view (`<chat>`), the state, the project as it
+  stands (files inline up to the profile's limit), a resumption's note, and
+  the task, last. The rules and the reference never change and the view
+  grows at its end, so the head stays cached. Before each call the view is
+  brought back under its budget. The agent is asked to leave a `NEXT:` plan
+  before `STATUS: continue`; it stays in the memory. The chain goes on while
+  the agent ends with `STATUS: continue` and made at least one call. When
+  the prompt would pass what `sample.limits()` reports (`maxPromptBytes`,
+  256 KiB today) less 20 KB, the files are left out (`read_file` remains).
+  With an API, the page runs the loop itself (Anthropic
+  `tool_use`/`tool_result` with the system cached; OpenAI `tool_calls`/`tool`):
+  the rules and the full guide are the system, the view and the rest the
+  first message; when a turn's own exchange outgrows the memory's budget,
+  the conversation starts again from the memory, where every step of it is
+  logged.
 - **Limits.** Each AI profile has its own (AI settings, *Agent limits*;
   empty is the default, `AGENT_LIMITS` in `agent.js`): the project quoted
-  (`files`), one tool result (`result`); with Claude, what a call hands the
-  next (`calls`, `keep` characters of each result, `said` characters of
-  messages); with an API, one reply's `tokens`. They are read when a leg
-  starts and hold until it ends, whatever profile Settings makes active
-  meanwhile. The trace records them.
+  (`files`), one tool result (`result`), the memory's view (`memory`, bytes:
+  48,000 with Claude, 96,000 with an API) and what a summary reads (`ctx`);
+  with an API, one reply's `tokens`, and the summaries' model. They are read
+  when a leg starts and hold until it ends, whatever profile Settings makes
+  active meanwhile. The trace records them, and each merge batch and summary.
+- **Hand-over to UniiChat.** UniiChat (uniichat.com, or one's own server)
+  works with the bend CLI on the user's computer: all of Bend, the
+  `--verdict` kernel and the hub. The Agent tab offers, even with no
+  profile set up, a message to paste there: the task, the project's files in
+  fenced blocks marked `path=`, how to install and run bend, the memory's
+  view, and how to answer (every changed file in such a block, in the
+  interface's language). *Copy, and open UniiChat* copies it and opens the
+  site (user-triggered). Its answer, pasted back, gives the files to take
+  back (new ones marked); taking them back takes a snapshot first, ends in a
+  toast with Undo, and leaves a note in the memory.
 - **Control.** Tool calls run one at a time, even when a round asks for
   several. Before the first, a snapshot is taken ("before the agent") and the
   editor turns read-only; the page's own edits (key bar, Split, Lemma, file
@@ -575,7 +618,10 @@ type), the goal after `⊢`, and a toolbar.
   the exceptions by design (a `LAWS.bend` alone, a `.js` effect, a window with
   no display under Node, the bounty's `?TODO`) and fails on anything else.
   `guide.mjs` runs the guide's snippets. `opcall.mjs` checks the conversions
-  and their round trips. `moves.mjs` renames and moves in a small project
+  and their round trips. `memory.mjs` checks the memory: names, lines, the
+  view under its budget and merging to half, growing only at its end
+  between merges, covering the chat in order, each node asked once, zoom,
+  search, a compactor too long or failing. `moves.mjs` renames and moves in a small project
   and checks the result with Bend's checker, and the refusals (cycle, name
   taken, bad name). `i18n.mjs` checks the languages against English.
 - **Playwright** (`npm run e2e`, from the repo root, after a build). Each
@@ -605,7 +651,12 @@ type), the goal after `⊢`, and a toolbar.
   `signature`), `agent_trace` (the live conversation, tokens, past sessions
   across a reload), `agent_resume` (a session ended by an API error,
   continued with other settings and a note, then taken up again from the
-  past sessions after a reload).
+  past sessions after a reload), `agent_memory` (the view in each Claude
+  call, zoom, the memory across sessions and a reload, merges through the
+  quick tier past a small budget, the prompt cap, the Memory view, forget
+  and Undo), `agent_memory_api` (Haiku summaries with a simulated
+  Anthropic server, a long turn started again from the memory),
+  `unii_handoff` (the message, UniiChat opened, files taken back, Undo).
 - **Simulating the environment.** `serve.py` takes a CSP to imitate the viewer.
   `?probe_ms=1` forces the deferred Constructors state. `frame_page()` puts a
   sandboxed iframe in front of the page: an opaque origin with no storage.
@@ -649,6 +700,11 @@ type), the goal after `⊢`, and a toolbar.
   single answer, outside agent mode) writes and then the live check judges.
   Agent writes are checked as they land, but a session may still end with the
   project failing: the final verdict says so, and the session can be undone.
+- **The memory's lines start as their message's beginning.** A long tool
+  result shows as its first ~500 bytes until a merge summarizes it; the
+  agent zooms for the rest. Summaries cost a call each once the view is
+  past its budget (about one per message in a long chat), on the user's
+  account in the viewer.
 - **The agent was only tested against scripted models.** Real models were
   not tried: how well a given one uses the tools is unknown, and small local
   models are likely to struggle with tool calls.

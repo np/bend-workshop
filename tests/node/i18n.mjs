@@ -12,7 +12,7 @@ const SAME_OK = new Set(["guide", "editor", "tab_base", "tab_guide", "base_ph", 
   "conv_prompt", "pad_enter", "agent_files", "prov_claude", "ses_mode_conversation", "ses_mode_journal", "tab_agent",
   "snap_manual", "ai_title", "decimal", "locale", "ai_profile_name", "import_name"]);
 let bad = 0;
-const args = [2, "x", 3, 4];
+const args = [2, "x", 3, 4, 5, 6];
 for (const code of Object.keys(L).filter((k) => k !== "en")) {
   const lg = L[code];
   const same = [];

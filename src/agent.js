@@ -20,7 +20,7 @@
     running: false, writing: false, paused: null, steps: 0, budget: 20, size: 20,
     log: [], ctl: null, queue: Promise.resolve(), mode: "project", holes: [], close: false,
     entry: "", task: "", before: null, done: false, last: "", raf: 0,
-    trace: [], t0: 0, wall: 0, notes: [], ended: "", note_draft: "", lim: null,
+    trace: [], t0: 0, wall: 0, notes: [], ended: "", note_draft: "", lim: null, mem: null,
   };
 
   // Everything said and done in a session, for whoever debugs it: what the
@@ -32,15 +32,15 @@
   }
   // What a session may carry, by provider; a profile's own numbers (AI
   // settings, Agent limits) override these. files: characters of the
-  // project quoted in the brief; result: one tool result as the agent gets
-  // it; with Claude, what one call hands the next: calls (tool calls),
-  // keep (characters of each of their results), said (characters of the
-  // earlier messages); with an API, tokens: one reply's length.
+  // project quoted in each call; result: one tool result as the agent gets
+  // it; memory: bytes of the view of the project's chat each call gets
+  // (past it, the view merges down to half); ctx: bytes of the messages a
+  // compaction reads; with an API, tokens: one reply's length.
   const AGENT_LIMITS = {
-    claude: { files: 40000, result: 6000, calls: 40, keep: 1000, said: 8000 },
-    api: { files: 80000, result: 6000, tokens: 4096 },
+    claude: { files: 40000, result: 6000, memory: 48000, ctx: 8000 },
+    api: { files: 80000, result: 6000, memory: 96000, ctx: 16000, tokens: 4096 },
   };
-  const AGENT_LIMIT_MAX = { files: 200000, result: 50000, calls: 400, keep: 20000, said: 60000, tokens: 128000 };
+  const AGENT_LIMIT_MAX = { files: 200000, result: 50000, memory: 200000, ctx: 64000, tokens: 128000 };
   // A Claude call's prompt: what sample.limits() reports, less a margin for
   // the platform's own framing; 256 KiB when it reports nothing.
   function sample_bytes() {
@@ -108,6 +108,10 @@
         description: "Returns the whole declaration of a name as the file sees it (its own defs, its imports, then Base): signature, doc comment and body. For the type alone, signature is lighter." },
       { name: "guide", run: tool_guide, schema: S({ section: str }),
         description: "Returns a section of the Bend guide by (part of) its title, or the list of titles when called without one." },
+      { name: "zoom", run: tool_zoom, schema: S({ id: { type: "integer" }, n: { type: "integer" } }, ["id"]),
+        description: "Opens the line id+n of <chat>, your memory, into the two lines of n/2 messages under it; n = 1 (the default) gives message id whole." },
+      { name: "search", run: tool_search, schema: S({ text: str }, ["text"]),
+        description: "Finds the messages of <chat>, your memory, that hold a text (any case), latest first, with their id and the words around it." },
     ];
     if (!holes) {
       tools.push(
@@ -129,6 +133,75 @@
       { name: "eval", run: tool_eval, schema: S({ file: str, expr: str, type: str }, ["expr", "type"]),
         description: "Evaluates an expression of the given type in the context of a file (its defs and imports) without changing it; returns the printed value. The type may be IO(...)." });
     return tools;
+  }
+
+  function tool_zoom(input) {
+    return mem_zoom(agent.mem || mem_new(), input.id, input.n === undefined ? 1 : input.n);
+  }
+
+  function tool_search(input) {
+    return mem_search(agent.mem || mem_new(), input.text);
+  }
+
+  // The project's chat, as the agent's memory: what it is told, does and
+  // says, and the page's own notes (a session's start and end, an undo).
+  function mem_log(kind, text) {
+    if (agent.mem !== null && agent.proj) {
+      mem_push(agent.mem, kind, text);
+      mem_save(agent.proj);
+    }
+  }
+
+  // The compactor: Claude at its quick tier in the viewer; with an API, the
+  // profile's compactor model (Haiku for Anthropic, else the chat's own).
+  function mem_asker(cfg) {
+    const signal = agent.ctl ? agent.ctl.signal : undefined;
+    const log = (model, t0, text) => trace("memory_call", { model, ms: Math.round(performance.now() - t0), reply: String(text).slice(0, 600) });
+    if (cfg.provider === "claude") {
+      return async (system, user) => {
+        const t0 = performance.now();
+        const got = await ai.sample(system + "\n\n" + user, { modelTier: "quick", signal });
+        log("quick", t0, got.text);
+        return got.text;
+      };
+    }
+    const url = (cfg.url || AI_PROVIDERS[cfg.provider].url || "").replace(/\/+$/, "");
+    const model = cfg.compactor || (cfg.provider === "anthropic" ? "claude-haiku-4-5-20251001" : cfg.model || AI_PROVIDERS[cfg.provider].model || "");
+    return async (system, user) => {
+      const t0 = performance.now();
+      const anth = cfg.provider === "anthropic";
+      let res;
+      try {
+        res = await fetch(url + (anth ? "/v1/messages" : "/v1/chat/completions"), { method: "POST", signal,
+          headers: Object.assign({ "content-type": "application/json" }, anth ? { "x-api-key": cfg.key, "anthropic-version": "2023-06-01",
+            "anthropic-dangerous-direct-browser-access": "true" } : cfg.key ? { authorization: "Bearer " + cfg.key } : {}),
+          body: JSON.stringify(anth ? { model, max_tokens: 400, system, messages: [{ role: "user", content: user }] }
+            : { model, max_tokens: 400, messages: [{ role: "system", content: system }, { role: "user", content: user }] }) });
+      } catch (e) {
+        throw e && e.name === "AbortError" ? { code: "cancelled", message: "" } : { code: "network", message: t("ai_no_network") };
+      }
+      if (!res.ok) {
+        throw { code: "http", message: "HTTP " + res.status };
+      }
+      const data = await res.json();
+      const text = anth ? (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("")
+        : (((data.choices || [])[0] || {}).message || {}).content || "";
+      log(model, t0, text);
+      return text;
+    };
+  }
+
+  // Before a call: the view back under its budget, merging what is due.
+  async function agent_settle(cfg) {
+    if (agent.mem === null) {
+      return;
+    }
+    const lim = agent.lim || agent_limits(cfg);
+    const r = await mem_shrink(agent.mem, lim.memory, mem_asker(cfg), cfg.provider === "claude" ? 3 : 6, lim.ctx);
+    if (r.merged > 0) {
+      trace("memory", { merged: r.merged, compactions: r.asked, view: mem_size(agent.mem), messages: agent.mem.msgs.length });
+      mem_save(agent.proj);
+    }
   }
 
   function tool_list() {
@@ -658,6 +731,7 @@
       }
       trace("tool_result", { step, name: tool.name, ok: got.ok, ms: Math.round(performance.now() - t1), result: got.text,
         diff: e.diff });
+      mem_log("tool", tool.name + " " + JSON.stringify(input || {}) + "\n→ " + (got.ok ? "" : "error: ") + got.text);
       return got;
     });
     agent.queue = turn.catch(() => {});
@@ -699,86 +773,11 @@
 
   const AGENT_REF = ["Syntax Reference", "Laws and Proofs"];
 
-  // The tools that only read: asked again with the same arguments, only
-  // the latest answer is worth keeping in the journal.
-  const AGENT_READS = new Set(["list_files", "read_file", "list_symbols", "signature", "lookup", "guide", "list_holes"]);
-
-  // The plan a Claude call leaves for the next: its NEXT: section.
-  function agent_plan(text) {
-    const m = /(?:^|\n)[ \t*#_]*NEXT[ \t*_]*:[ \t]*([\s\S]*?)(?=\n[ \t*#_]*STATUS[ \t*_]*:|$)/i.exec(text || "");
-    return m ? m[1].trim().slice(0, 4000) : "";
-  }
-
-  function agent_cut(text, n) {
-    return text.length > n ? text.slice(0, n) + "\n…[cut]" : text;
-  }
-
-  // What the earlier calls of a Claude session did, for the next one: their
-  // messages (the latest first in line for room), their last tool calls
-  // with what they returned, the plan left. A read of a project file quoted
-  // in <files> is not repeated: the file as it stands is there.
-  function agent_journal(lim, inline, n_calls) {
-    const said = agent.log.filter((e) => e.kind === "say" && e.text && e.text.trim() && e.text !== t("ai_thinking"));
-    const tools = agent.log.filter((e) => e.kind === "tool");
-    if (said.length === 0 && tools.length === 0) {
-      return "";
-    }
-    const msgs = [];
-    let room = lim.said;
-    for (let i = said.length - 1; i >= 0 && room > 200; i--) {
-      const text = said[i].text.trim();
-      const part = text.length > room ? "[…] " + text.slice(text.length - room) : text;
-      room -= part.length;
-      msgs.unshift("<message call=\"" + (i + 1) + "\">\n" + part + "\n</message>");
-    }
-    const seen = new Set();
-    const kept = [];
-    for (let i = tools.length - 1; i >= 0 && kept.length < n_calls; i--) {
-      const e = tools[i];
-      if (AGENT_READS.has(e.name)) {
-        const key = e.name + JSON.stringify(e.args || {});
-        if (seen.has(key)) {
-          continue;
-        }
-        seen.add(key);
-      }
-      kept.push([i + 1, e]);
-    }
-    kept.reverse();
-    const calls = kept.map(([n, e]) => {
-      const args = agent_cut(JSON.stringify(e.args || {}), 400);
-      const head = "[" + n + "] " + e.name + " " + args + " → " + (e.state === "ok" ? "ok" : e.state === "err" ? "error" : "not finished")
-        + (e.verdict ? " (" + e.verdict + ")" : "");
-      let out;
-      if (e.state === "ok" && e.name === "read_file" && inline && state.files.some((f) => f.name === String((e.args || {}).path))) {
-        out = "(this file, as it stands now, is in <files>)";
-      } else {
-        const r = e.result;
-        out = r === undefined ? "" : agent_cut(typeof r === "string" ? r : JSON.stringify(r), lim.keep);
-      }
-      return head + (out ? "\n" + out.replace(/^/gm, "    ") : "");
-    });
-    const plan = agent_plan(agent.last);
-    const parts = ["<so_far>\nThis is call " + (said.length + 1) + " of a session already under way: "
-      + tools.length + " tool calls so far. Below is what you did and saw; it stays true unless a later write changed it."];
-    if (msgs.length) {
-      parts.push("<earlier_messages>\nWhat you wrote at the end of each earlier call" + (msgs.length < said.length ? " (the oldest left out)" : "")
-        + ":\n" + msgs.join("\n") + "\n</earlier_messages>");
-    }
-    if (calls.length) {
-      parts.push("<tool_calls>\n" + (kept.length < tools.length ? "The last " + kept.length + " of them, repeated reads left out, oldest first"
-        : "All of them, repeated reads left out, oldest first") + ", each with what it returned:\n" + calls.join("\n") + "\n</tool_calls>");
-    }
-    if (plan) {
-      parts.push("<plan>\nThe next steps you planned at the end of the last call. Take them up from the first one:\n" + plan + "\n</plan>");
-    }
-    return parts.join("\n\n") + "\n</so_far>";
-  }
-
-  // What the agent is told: who it is, what it may do, the task, the
-  // project as it stands, and, with Claude past the first call, the journal
-  // of what it did so far. Kept under the viewer's prompt size by giving up
-  // older tool calls first, then the quoted files.
+  // What the agent is told: who it is, what it may do, the reference, its
+  // memory (the view of the project's chat), the project as it stands, the
+  // task. The rules and the reference never change, and the view grows only
+  // at its end between merges, so the prompt's head stays cached. Kept under
+  // the viewer's prompt size by leaving the files out when it must.
   function agent_brief(compact) {
     const lim = agent.lim || agent_limits(ai_cfg());
     const md = $("#bend-guide-md").textContent;
@@ -789,7 +788,6 @@
         return "";
       }
     }).join("\n\n") : md;
-    const going = compact && agent.log.some((e) => e.kind === "tool");
     const locks = state.files.filter((f) => agent_locked(f.name)).map((f) => f.name);
     const rules = [
       "You are an agent at work in the Bend 2 workshop, a web page that runs Bend's own checker and compiler. Bend 2 is a functional language with dependent types, affine variables and a termination checker; its syntax is Python-shaped, its semantics close to Lean.",
@@ -800,21 +798,26 @@
         : "You may change any file" + (locks.length ? " except these, locked by the user: " + locks.join(", ") : "") + ". Base and hub modules are read-only.",
       "Every write is checked at once and the verdict comes back to you. Rely on it: a proof counts only when the checker accepts it, the verdict reading ALL PROOFS CHECK. Never claim that something works unless a check or a run showed it.",
       "Prefer small steps: one hole, one lemma, one fix at a time, then look at the verdict. A ?name in the code prints its goal on the next check, with its context: use that to see what is wanted.",
+      "<chat> is your memory: this project's whole chat with you, across sessions, oldest first, as one-line summaries. Each line id+n|text stands for the n messages from id on. Kinds: user (the user's words), agent (your replies), tool (your tool calls, each with what it returned), note (the page's records: sessions started and ended, final checks, undos). Recent lines cover one message each; the older, the more a line covers. A long message shows as its beginning, then (zoom for all). Its latest word on a thing is the truth, except for the files, which <files> gives as they stand now. zoom(id, n) opens line id+n into the two lines under it, zoom(id, 1) gives message id whole, and search(text) finds the messages that hold a text. Zoom whenever a line only mentions what you need (a past attempt, an error, a decision) before you act, guess or ask; do not redo what <chat> shows done.",
     ];
     if (compact) {
-      rules.push("This call allows only a few tool rounds; the session goes on in further calls, each handed a journal of the ones before. Spend the rounds on the work: a write, a check, a run.");
-    }
-    if (going) {
-      rules.push("You are continuing this session, not starting it. Do not survey the project again: the files are quoted below as they stand after your changes, and <so_far> holds the lookups, signatures and guide sections you already read and what they said. Read or look up only what is not there. Start from <plan> and make the next concrete change.");
+      rules.push("This call allows only a few tool rounds; the session goes on in further calls, each with your memory as it then stands. Spend the rounds on the work: a write, a check, a run.");
     }
     rules.push("End your final message with one line: STATUS: done (the task is done), STATUS: continue (you have more to do and want to go on), or STATUS: blocked (say why)."
-      + (compact ? " Before STATUS: continue, write a NEXT: section: the concrete steps still to take, starting with the very next tool call, with what you learned that they rely on; it is handed back to you in the next call." : "")
+      + (compact ? " Before STATUS: continue, write a NEXT: section: the concrete steps still to take, starting with the very next tool call; it stays in your memory for the next call." : "")
       + " Write that message in " + LANG_NAMES[lang] + ".");
     const files = state.files.filter((f) => /\.(bend|js)$/.test(f.name));
     const size = files.reduce((n, f) => n + f.text.length, 0);
-    const build = (n_calls, inline) => {
-      const parts = [rules.join("\n\n"),
-        "<task>\n" + agent.task + "\n</task>"];
+    const chat = agent.mem === null || agent.mem.msgs.length === 0 ? "(empty: this is the project's first message)" : mem_lines(agent.mem).join("\n");
+    const build = (inline) => {
+      const parts = [rules.join("\n\n"), "<bend_reference>\n" + ref + "\n</bend_reference>", "<chat>\n" + chat + "\n</chat>",
+        "<state>\nChecks start from " + agent.entry + ".\n" + JSON.stringify(tool_list(), null, 1) + "\n</state>"];
+      if (inline) {
+        parts.push("<files>\nThe project as it stands now: no need to read these files again.\n"
+          + files.map((f) => "<file path=\"" + f.name + "\">\n" + f.text + "\n</file>").join("\n") + "\n</files>");
+      } else {
+        parts.push("The files are too large to quote here: read them with read_file.");
+      }
       if (agent.ended !== "") {
         // a session taken up again: why it stopped, and what the user says now
         parts.push("<resumed>\nThis session stopped once (" + agent.ended + ") and the user took it up again."
@@ -822,42 +825,12 @@
           + (agent.notes.length ? "\nThe user's instructions for going on, latest last:\n" + agent.notes.map((n) => "- " + n).join("\n") : "")
           + "\n</resumed>");
       }
-      parts.push(
-        "<state>\nChecks start from " + agent.entry + ".\n" + JSON.stringify(tool_list(), null, 1) + "\n</state>");
-      if (inline) {
-        parts.push("<files>\nThe project as it stands now" + (going ? ", after every change you made: no need to read these files again" : "") + ".\n"
-          + files.map((f) => "<file path=\"" + f.name + "\">\n" + f.text + "\n</file>").join("\n") + "\n</files>");
-      } else {
-        parts.push("The files are too large to quote here: read them with read_file.");
-      }
-      if (compact) {
-        const j = agent_journal(lim, inline, n_calls);
-        if (j) {
-          parts.push(j);
-        }
-      } else if (agent.log.some((e) => e.kind === "tool")) {
-        const done = agent.log.filter((e) => e.kind === "tool").slice(-30).map((e) => "- " + e.name + " "
-          + JSON.stringify(e.args).slice(0, 160) + " → " + (e.state === "ok" ? "ok" + (e.verdict ? " (" + e.verdict + ")" : "")
-            : "error: " + String(e.result).slice(0, 160)));
-        parts.push("<so_far>\nWhat you did so far in this session, latest last:\n" + done.join("\n")
-          + (agent.last ? "\n\nYour last message:\n" + agent.last.slice(-1500) : "") + "\n</so_far>");
-      }
-      parts.push("<bend_reference>\n" + ref + "\n</bend_reference>");
+      parts.push("<task>\n" + agent.task + "\n</task>");
       return parts.join("\n\n");
     };
-    let n_calls = lim.calls || 0;
-    let inline = size <= lim.files;
-    let brief = build(n_calls, inline);
-    const cap = sample_bytes();
-    while (compact && new TextEncoder().encode(brief).length > cap) {
-      if (n_calls > 5) {
-        n_calls = Math.floor(n_calls / 2);
-      } else if (inline) {
-        inline = false;
-      } else {
-        break;
-      }
-      brief = build(n_calls, inline);
+    let brief = build(size <= lim.files);
+    if (compact && size <= lim.files && new TextEncoder().encode(brief).length > sample_bytes()) {
+      brief = build(false);
     }
     return brief;
   }
@@ -883,6 +856,7 @@
       if (CLAUDE_TIERS.includes(cfg.model)) {
         opts.modelTier = cfg.model;
       }
+      await agent_settle(cfg);
       const prompt = agent_brief(true);
       const leg = agent.trace.filter((x) => x.type === "claude_call").length + 1;
       trace("claude_call", { leg, model_tier: opts.modelTier || "default", prompt });
@@ -896,6 +870,9 @@
       trace("claude_reply", { leg, text: got.text, truncated: got.truncated, status: agent_status(got.text) });
       say.text = got.text;
       agent.last = got.text;
+      if (got.text.trim()) {
+        mem_log("agent", got.text);
+      }
       if (!agent.running || agent_status(got.text) !== "continue" || agent.steps === before) {
         agent_why(got.text);
         return;
@@ -906,9 +883,12 @@
 
   async function agent_post(url, headers, body) {
     const round = agent.trace.filter((x) => x.type === "api_request").length + 1;
-    const sent = agent.trace.filter((x) => x.type === "api_request").reduce((n, x) => n + x.new_messages.length, 0);
+    // the messages traced already, of this conversation (it restarts from
+    // the memory when it grows too long: then system and tools again)
+    const sent = agent.api_seen || 0;
     const req = { round, url, model: body.model, new_messages: body.messages.slice(sent) };
-    if (round === 1) {
+    agent.api_seen = body.messages.length;
+    if (sent === 0) {
       req.system = body.system;
       req.tools = body.tools;
       req.max_tokens = body.max_tokens;
@@ -970,13 +950,28 @@
       answer: (rs) => rs.map((r) => ({ role: "tool", tool_call_id: r.id, content: r.ok ? r.text : "Error: " + r.text })) };
   }
 
+  // With an API the page runs the loop: the brief's head (rules and the
+  // reference) is the system, cached; the rest, the first message. When a
+  // turn's own exchange outgrows the memory's budget, it starts again from
+  // the memory, where every step of it is logged.
   async function agent_api(cfg) {
     const tools = agent_tools();
-    const brief = agent_brief(false);
-    const cut = brief.indexOf("<task>");
-    const sys = brief.slice(0, cut) + brief.slice(brief.indexOf("<bend_reference>"));
-    const msgs = [{ role: "user", content: brief.slice(cut, brief.indexOf("<bend_reference>")) }];
+    const lim = agent.lim || agent_limits(cfg);
+    let sys = "";
+    let msgs = [];
+    const fresh = async (again) => {
+      await agent_settle(cfg);
+      const brief = agent_brief(false);
+      const cut = brief.indexOf("<chat>");
+      sys = brief.slice(0, cut);
+      agent.api_seen = 0;
+      msgs = [{ role: "user", content: brief.slice(cut) + (again ? "\n\n(Going on: what you did so far in this session is at the end of <chat>.)" : "") }];
+    };
+    await fresh(false);
     while (agent.running) {
+      if (new TextEncoder().encode(JSON.stringify(msgs.slice(1))).length > lim.memory) {
+        await fresh(true);
+      }
       const say = agent_log({ kind: "say", text: t("ai_thinking") });
       let reply;
       try {
@@ -988,6 +983,8 @@
       say.text = reply.text;
       if (!reply.text.trim()) {
         agent.log.splice(agent.log.indexOf(say), 1);
+      } else {
+        mem_log("agent", reply.text);
       }
       agent.last = reply.text || agent.last;
       if (reply.calls.length === 0) {
@@ -1035,6 +1032,15 @@
       files: state.files.map((f) => ({ name: f.name, text: f.text })) };
   }
 
+  // A session's settings, in a line of the memory.
+  function mem_how(cfg) {
+    const locks = (state.locks || []).filter((f) => state.files.some((x) => x.name === f));
+    return "with " + cfg.name + ", checked from " + agent.entry + ", "
+      + (agent.mode === "holes" ? "only the holes " + agent.holes.map((h) => "?" + h).join(", ") + (agent.close ? " (each fill must close its goal)" : "")
+        : "the project" + (locks.length ? " but the locked " + locks.join(", ") : ""))
+      + " to change, " + agent.size + " steps before a pause";
+  }
+
   function agent_size() {
     agent.size = Math.max(1, Number(($("#agent-budget") || { value: agent.size }).value) || 20);
   }
@@ -1053,9 +1059,12 @@
     agent_size();
     Object.assign(agent, { done: false, steps: 0, log: [], last: "", notes: [], ended: "", note_draft: "",
       before: work_snapshot(), proj: state.id, trace: [], t0: performance.now(), wall: Date.now() });
+    agent.mem = await mem_open(state.id);
     trace("session", Object.assign({ started: new Date(agent.wall).toISOString(), bend: Core.VERSION + " (" + Core.COMMIT + ")",
-      task: agent.task }, agent_settings(cfg)));
+      task: agent.task, memory: agent.mem.msgs.length }, agent_settings(cfg)));
     agent_log({ kind: "note", text: t("agent_started", cfg.name) });
+    mem_log("note", "A session starts, " + mem_how(cfg) + ".");
+    mem_log("user", agent.task);
     await agent_go(cfg);
   }
 
@@ -1082,6 +1091,9 @@
     agent.note_draft = "";
     agent_size();
     agent.done = false;
+    agent.mem = await mem_open(agent.proj);
+    mem_log("note", "The user takes the session up again (it had stopped: " + agent.ended + "), " + mem_how(cfg) + ".");
+    mem_log("user", note || "Go on.");
     trace("resume", Object.assign({ note, ended: agent.ended }, agent_settings(cfg)));
     agent_log({ kind: "note", text: t("agent_resumed", cfg.name) });
     if (note !== "") {
@@ -1125,6 +1137,8 @@
       const r = await comp_ask(agent.entry, false);
       agent_log({ kind: "verdict", ok: !!r.ok && !/^SOME/.test(r.text), open: !!r.open,
         text: r.ok ? r.text.split("\n")[0] : r.open ? open_brief(r) : err_brief(r) });
+      mem_log("note", "The session ends after " + agent.steps + " steps (" + agent.ended + "). Final check from " + agent.entry + ": "
+        + (r.ok ? r.text.split("\n")[0] : r.open ? open_brief(r) : err_brief(r)));
       trace("end", { steps: agent.steps, verdict: r.text, files: state.files.map((f) => ({ name: f.name, text: f.text })) });
       // the same record as the session goes on: one session, one entry
       ses_put({ id: agent.wall, started: new Date(agent.wall).toISOString(), task: agent.task, mode: agent.mode,
@@ -1178,6 +1192,7 @@
     work_restore(agent.before);
     store_save();
     trace("undo", {});
+    mem_log("note", "The user undid the session: the files are back as they were before it started.");
     agent_log({ kind: "note", text: t("agent_undone") });
     toast(t("agent_undone"));
   }
@@ -1316,8 +1331,15 @@
     if (ses.db === null) {
       ses.db = new Promise((done) => {
         try {
-          const req = indexedDB.open("bend-workshop", 1);
-          req.onupgradeneeded = () => req.result.createObjectStore("sessions", { keyPath: "id" });
+          // 1: the past sessions; 2: the agent's memory, a chat per project
+          const req = indexedDB.open("bend-workshop", 2);
+          req.onupgradeneeded = () => {
+            for (const name of ["sessions", "chats"]) {
+              if (!req.result.objectStoreNames.contains(name)) {
+                req.result.createObjectStore(name, { keyPath: "id" });
+              }
+            }
+          };
           req.onsuccess = () => done(req.result);
           req.onerror = () => done(null);
           req.onblocked = () => done(null);
@@ -1329,15 +1351,15 @@
     return ses.db;
   }
 
-  function ses_req(mode, fn) {
+  function ses_req(mode, fn, store = "sessions") {
     return ses_db().then((db) => new Promise((done) => {
       if (db === null) {
         done(null);
         return;
       }
       try {
-        const tx = db.transaction("sessions", mode);
-        const req = fn(tx.objectStore("sessions"));
+        const tx = db.transaction(store, mode);
+        const req = fn(tx.objectStore(store));
         tx.oncomplete = () => done(req ? req.result : true);
         tx.onerror = () => done(null);
       } catch (e) {
@@ -1591,7 +1613,7 @@
 
   function cv_brief(text) {
     const box = el("div", { class: "cv-brief" });
-    const re = /<(task|resumed|state|files|so_far|bend_reference)>\n?([\s\S]*?)\n?<\/\1>/g;
+    const re = /<(task|resumed|chat|state|files|so_far|bend_reference)>\n?([\s\S]*?)\n?<\/\1>/g;
     let at = 0;
     const loose = (s) => {
       if (s.trim()) {
@@ -1784,10 +1806,174 @@
       }
       case "end":
         return row("note", t("conv_end", e.steps), cv_pre(e.verdict), cv_files(e.files, conv.start));
+      case "memory":
+        return row("note", t("conv_memory", e.merged, e.compactions, kb(e.view), e.messages));
+      case "memory_call":
+        return row("in", t("conv_memory_call", e.model, e.ms), cv_pre(e.reply));
       default:
         return row(/error/.test(e.type) ? "err" : "note", e.type + (e.steps !== undefined ? " · " + e.steps : ""),
           /error/.test(e.type) ? cv_pre(e) : null);
     }
+  }
+
+  // Memory, shown
+  // -------------
+  // The project's chat as the agent sees it: its view, line by line, each
+  // opened down to its messages on a tap, and a way to forget it all.
+
+  function mem_row(m, id, n) {
+    const l = Math.log2(n);
+    const d = el("details", { class: "cv-fold mem-row" },
+      el("summary", {}, el("span", { class: "cv-name", text: id + "+" + n }), " ", mem_text(m, l, id / n)));
+    let filled = false;
+    d.addEventListener("toggle", () => {
+      if (d.open && !filled) {
+        filled = true;
+        d.append(n === 1 ? cv_pre(m.msgs[id].kind + " · " + when(m.msgs[id].t) + "\n\n" + m.msgs[id].text)
+          : el("div", { class: "cv-list" }, mem_row(m, id, n / 2), mem_row(m, id + n / 2, n / 2)));
+      }
+    });
+    return d;
+  }
+
+  function mem_panel() {
+    const box = el("div", { class: "mem" });
+    const m = mem_store.cache.get(state.id);
+    if (m === undefined) {
+      box.append(el("small", { class: "dim", text: "…" }));
+      return box;
+    }
+    const lim = agent_limits(ai_cfg());
+    box.append(el("p", { class: "dim", text: t("mem_stats", m.msgs.length, m.view.length, kb(mem_size(m)), kb(lim.memory), m.made) }),
+      el("small", { class: "dim", text: t("mem_hint") }));
+    if (m.msgs.length === 0) {
+      box.append(el("p", { class: "empty", text: t("mem_empty") }));
+      return box;
+    }
+    const list = el("div", { class: "cv-list mem-lines" });
+    for (const [l, i] of m.view) {
+      list.append(mem_row(m, i * 2 ** l, 2 ** l));
+    }
+    box.append(list, el("div", { class: "row agent-end" }, el("button", { class: "btn danger", type: "button", text: t("mem_forget"),
+      disabled: agent.running, onclick: async () => {
+        const pid = state.id;
+        const keep = JSON.parse(JSON.stringify(m));
+        await mem_forget(pid);
+        agent.mem = agent.proj === pid ? mem_store.cache.get(pid) : agent.mem;
+        agent_paint();
+        toast(t("mem_forgotten"), t("undo"), async () => {
+          mem_store.cache.set(pid, keep);
+          agent.mem = agent.proj === pid ? keep : agent.mem;
+          await mem_flush(pid);
+          agent_paint();
+        });
+      } })));
+    return box;
+  }
+
+  // UniiChat
+  // --------
+  // A hand-over to UniiChat (uniichat.com, or one's own server), which has
+  // a shell where the bend CLI runs whole (the Lean kernel of --verdict,
+  // the hub): a message to paste there, with the task, the files and the
+  // memory's view; and its answer taken back, the files it gives in fenced
+  // blocks marked path=, with a snapshot first and Undo.
+
+  const UNII_URL = "https://uniichat.com";
+
+  function unii_message(task) {
+    const files = state.files.filter((f) => /\.(bend|js)$/.test(f.name));
+    const m = mem_store.cache.get(state.id);
+    const entry = agent.entry || agent_default_entry();
+    const history = m && m.msgs.length ? mem_cut(mem_lines(m).join("\n"), 16000) : "";
+    return ["I am working on a Bend 2 project in the Bend 2 pocket workshop (https://np.github.io/bend-workshop/), and hand it over to you: work on it with the bend CLI on my computer.",
+      "Task: " + task,
+      "Setup: if bend is missing, install it with `curl -fsSL https://bend-lang.com/install.sh | sh`; `bend guide` prints the guide. Write the files below in a new folder and work there: run `bend " + entry + "`"
+        + (files.some((f) => f.name === "PROOF.bend") ? " and `bend PROOF.bend`" : "") + " after each change, until the verdict reads ALL PROOFS CHECK, and say what `bend " + entry + " --verdict` answers.",
+      "When you are done, give me every file you changed or created, whole, each in a fenced block whose info string is `bend path=<its path>` (or `js path=<its path>`), so that the workshop can take them back. Answer me in " + LANG_NAMES[lang] + ".",
+      "Files (checked from " + entry + "):",
+      files.map((f) => fence(f.text, (f.name.endsWith(".js") ? "js" : "bend") + " path=" + f.name)).join("\n\n"),
+      history ? "What the workshop's agent did on this project so far, as its memory's one-line summaries (id+n|text, oldest first):\n" + fence(history, "text") : "",
+    ].filter(Boolean).join("\n\n");
+  }
+
+  // The files an answer gives: fenced blocks whose info string says path=.
+  function unii_files(text) {
+    const out = [];
+    const re = /^(`{3,}|~{3,})[^\n]*?\bpath=["']?([^\s"'`]+)["']?[^\n]*\n([\s\S]*?)\n\1[ \t]*$/gm;
+    for (const m of String(text).matchAll(re)) {
+      const name = m[2].replace(/^\.\//, "");
+      const at = state.files.findIndex((f) => f.name === name);
+      if (name_ok(name, at) === "" && !out.some((x) => x.name === name)) {
+        out.push({ name, text: m[3].replace(/\s*$/, "\n"), fresh: at < 0 });
+      }
+    }
+    return out;
+  }
+
+  function unii_take(got) {
+    if (agent_guard() || got.length === 0) {
+      return false;
+    }
+    const keep = work_snapshot();
+    snap_take(["snap_before_unii"], true);
+    const open = view.hub === null ? state.files[state.active] : null;
+    for (const g of got) {
+      const f = state.files.find((x) => x.name === g.name);
+      if (!f) {
+        state.files.push({ name: g.name, text: g.text });
+      } else if (f !== open) {
+        f.text = g.text;
+      }
+    }
+    const mine = open && got.find((g) => g.name === open.name);
+    if (mine && mine.text !== open.text) {
+      ed_rewrite(mine.text);
+    }
+    proj_touch();
+    store_save();
+    files_paint();
+    live_soon();
+    const m = mem_store.cache.get(state.id);
+    if (m) {
+      mem_push(m, "note", "The user took files back from UniiChat: " + got.map((g) => g.name + (g.fresh ? " (new)" : "")).join(", ") + ".");
+      mem_save(state.id);
+    }
+    toast(t("unii_taken", got.length), t("undo"), () => work_restore(keep));
+    return true;
+  }
+
+  function unii_sheet() {
+    const draft = ($("#agent-task") || { value: "" }).value.trim() || agent.draft || "";
+    const task = draft || agent.task || t("agent_task_default");
+    const msg = unii_message(task);
+    const shown = el("textarea", { class: "ai-req", rows: "6", readonly: true, spellcheck: "false" });
+    shown.value = msg;
+    const answer = el("textarea", { class: "ai-req", rows: "5", spellcheck: "false", placeholder: t("unii_answer_ph") });
+    const note = el("small", { text: "", style: "white-space: pre-line" });
+    const take = el("button", { class: "btn primary", type: "button", text: t("unii_take"), disabled: true });
+    let got = [];
+    answer.addEventListener("input", () => {
+      got = unii_files(answer.value);
+      take.disabled = got.length === 0;
+      note.textContent = answer.value.trim() === "" ? "" : got.length === 0 ? t("unii_none")
+        : t("unii_files", got.map((g) => g.name + (g.fresh ? " +" : "")).join(", "));
+    });
+    const body = el("div", { class: "form" }, el("p", { class: "sigdoc", text: t("unii_hint") }),
+      el("label", {}, t("unii_message", kb(msg.length)), shown),
+      el("div", { class: "row" },
+        el("button", { class: "btn primary", type: "button", text: t("unii_copy_open"), onclick: () => {
+          copy_text(msg);
+          window.open(UNII_URL, "_blank", "noopener");
+        } }),
+        el("button", { class: "btn", type: "button", text: t("copy"), onclick: () => copy_text(msg) })),
+      el("label", {}, t("unii_answer"), answer), note, el("div", { class: "row" }, take));
+    const close = sheet_open(t("unii_title"), body);
+    take.addEventListener("click", () => {
+      if (unii_take(got)) {
+        close();
+      }
+    });
   }
 
   // The pane
@@ -1815,7 +2001,8 @@
     pane.textContent = "";
     const box = el("div", { class: "agent" });
     if (!agent_ok() && !agent.running) {
-      box.append(el("p", { class: "empty", text: t("agent_unavailable") }));
+      box.append(el("p", { class: "empty", text: t("agent_unavailable") }),
+        el("div", { class: "row" }, el("button", { class: "btn", type: "button", text: t("unii_btn"), onclick: unii_sheet })));
       pane.append(box);
       return;
     }
@@ -1850,16 +2037,24 @@
         } })),
         el("p", { class: "agent-task-shown", text: past.task }));
     }
-    if (trace.length > 0) {
+    const mem_now = mem_store.cache.get(state.id);
+    if (mem_now === undefined) {
+      mem_open(state.id).then(() => agent_paint_soon());
+    }
+    if (trace.length > 0 || (mem_now && mem_now.msgs.length > 0)) {
       const modes = el("div", { class: "row agent-modes" });
-      for (const m of ["journal", "conversation"]) {
+      for (const m of ["journal", "conversation", "memory"]) {
         modes.append(el("button", { class: "chip" + (ses.mode === m ? " on" : ""), type: "button", "aria-pressed": String(ses.mode === m),
           text: t("ses_mode_" + m), onclick: () => { ses.mode = m; agent_paint(); } }));
       }
-      modes.append(el("span", { class: "dim conv-stats", text: conv_stats(trace) }));
+      if (trace.length > 0) {
+        modes.append(el("span", { class: "dim conv-stats", text: conv_stats(trace) }));
+      }
       box.append(modes);
     }
-    if (ses.mode === "conversation" && trace.length > 0) {
+    if (ses.mode === "memory") {
+      box.append(mem_panel());
+    } else if (ses.mode === "conversation" && trace.length > 0) {
       box.append(conv_view(trace, past ? "past:" + past.id : "live:" + agent.wall));
     } else {
       const log = el("div", { class: "agent-log" });
@@ -1999,7 +2194,8 @@
             agent.log = [];
             agent_paint();
           } }))
-        : el("div", { class: "row" }, el("button", { class: "btn primary", type: "button", text: t("agent_start"), onclick: agent_start })));
+        : el("div", { class: "row" }, el("button", { class: "btn primary", type: "button", text: t("agent_start"), onclick: agent_start }),
+          el("button", { class: "btn", type: "button", text: t("unii_btn"), onclick: unii_sheet })));
     return form;
   }
 

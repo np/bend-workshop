@@ -1457,3 +1457,8 @@ button.goal-name { text-decoration: underline; text-underline-offset: 3px; }
 .ver-k { min-width: 84px; color: var(--muted); font-size: 12.5px; }
 .ver-links { margin-top: 6px; flex-wrap: wrap; gap: 6px; }
 .ver-links .btn { display: inline-flex; align-items: center; gap: 6px; text-decoration: none; }
+
+/* Memory, in the Agent tab */
+.mem { display: grid; gap: 6px; margin-top: 10px; }
+.mem > p { margin: 0; font-size: 12.5px; }
+.mem-row > summary { color: var(--ink); font-size: 12.5px; overflow-wrap: anywhere; }

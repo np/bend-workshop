@@ -105,6 +105,7 @@ const fill = { STYLE: read("src/style.css"), GUIDE: guide, EXAMPLES: examples, P
   RUNTAIL: read("src/runner-tail.js"),
   CORE: core, APP: read("src/app.js").replace("/*__OPCALL__*/", () => read("src/opcall.js"))
     .replace("/*__MOVES__*/", () => read("src/moves.js"))
+    .replace("/*__MEMORY__*/", () => read("src/memory.js"))
     .replace("/*__AGENT__*/", () => read("src/agent.js")) };
 let html = read("src/index.template.html");
 for (const [k, v] of Object.entries(fill)) {

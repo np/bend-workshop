@@ -5338,9 +5338,21 @@
       const limits = el("details", { class: "ai-limits", open: lim_open },
         el("summary", { text: t("ai_limits") }),
         el("div", { class: "ai-rows" }, ...Object.keys(lims).map(limit),
+          claude ? null : (() => {
+            // the model that writes the memory's summaries: a cheap one
+            const i = el("input", { type: "text", value: cfg.compactor || "", autocapitalize: "off", autocomplete: "off",
+              autocorrect: "off", spellcheck: "false", "aria-label": t("ai_compactor"),
+              placeholder: cfg.provider === "anthropic" ? "claude-haiku-4-5-20251001" : cfg.model || AI_PROVIDERS[cfg.provider].model || "" });
+            i.addEventListener("input", () => {
+              cfg.compactor = i.value.trim() || undefined;
+              save();
+            });
+            return el("label", {}, t("ai_compactor"), i);
+          })(),
           el("small", { text: t(claude ? "ai_limits_hint_claude" : "ai_limits_hint_api") }),
           el("div", { class: "row" }, el("button", { class: "btn", type: "button", text: t("ai_limits_reset"), onclick: () => {
             delete cfg.limits;
+            delete cfg.compactor;
             save();
             paint();
           } }))));
@@ -5486,6 +5498,7 @@
 
 /*__OPCALL__*/
 /*__MOVES__*/
+/*__MEMORY__*/
 /*__AGENT__*/
   // Init
   // ====
