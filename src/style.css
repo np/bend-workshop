@@ -1393,26 +1393,23 @@ button.goal-name { text-decoration: underline; text-underline-offset: 3px; }
 
 /* Toast
    ===== */
+.status { flex: none; min-height: 0; border-top: 1px solid transparent; background: var(--surface); padding-bottom: env(safe-area-inset-bottom, 0px); }
+.status:has(.toast) { border-top-color: var(--line); }
 .toast {
-  position: fixed;
-  z-index: 30;
-  left: 50%;
-  bottom: calc(70px + env(safe-area-inset-bottom, 0px));
-  transform: translateX(-50%);
   display: flex;
   align-items: center;
-  gap: 12px;
-  max-width: calc(100% - 24px);
-  padding: 8px 8px 8px 14px;
-  border-radius: 8px;
-  background: var(--ink);
-  color: var(--paper);
-  box-shadow: 0 6px 24px rgba(10, 14, 28, .3);
-  animation: rise 160ms ease-out;
+  gap: 10px;
+  min-height: 30px;
+  padding: 2px 12px;
+  font-size: 13px;
+  color: var(--ink);
+  transition: color .4s;
 }
-
-.toast span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.toast button { height: 32px; padding: 0 10px; border-radius: 6px; font-weight: 700; color: inherit; border: 1px solid color-mix(in srgb, var(--paper) 35%, transparent); flex: none; }
+.toast.old { color: var(--muted); }
+.toast.float { position: fixed; z-index: 40; left: 50%; bottom: calc(16px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); max-width: calc(100% - 32px); border-radius: 8px; background: var(--ink); color: var(--paper); box-shadow: 0 4px 16px rgba(0,0,0,.2); }
+.toast.float button { background: transparent; color: inherit; border-color: color-mix(in srgb, var(--paper) 35%, transparent); }
+.toast span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.toast button { height: 26px; padding: 0 10px; border-radius: 6px; font-weight: 700; color: var(--cobalt); border: 1px solid var(--line); background: var(--paper); flex: none; }
 
 /* Wide screens: editor left, panel right, always open
    =================================================== */
@@ -1431,7 +1428,6 @@ button.goal-name { text-decoration: underline; text-underline-offset: 3px; }
   .panel-closed .panes { display: block; }
   .chev { display: none; }
   .act .lbl { display: inline; }
-  .toast { bottom: 24px; }
   .guide { font-size: 17px; }
   .scrim { align-items: center; }
   .sheet { border-radius: 12px; border-bottom: 1px solid var(--line); max-height: 80%; }
@@ -1462,3 +1458,36 @@ button.goal-name { text-decoration: underline; text-underline-offset: 3px; }
 .mem { display: grid; gap: 6px; margin-top: 10px; }
 .mem > p { margin: 0; font-size: 12.5px; }
 .mem-row > summary { color: var(--ink); font-size: 12.5px; overflow-wrap: anywhere; }
+
+/* Rewrite, on a goal card */
+.goal-body > .rw, .rw { display: grid; gap: 6px; margin-top: 6px; flex: 1 0 100%; width: 100%; min-width: 0; white-space: normal; font-family: var(--mono); }
+.rw input { flex: 1; min-width: 0; font: inherit; font-size: 13px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); }
+.rw-err { color: var(--fail); font-size: 12px; }
+.rw-cand { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 8px; text-align: left; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); font: inherit; font-size: 12.5px; color: var(--ink); overflow-wrap: anywhere; }
+.rw-cand > small { grid-column: 2; }
+.rw-cand.fits { border-color: var(--proof); }
+.rw-cand.bad { opacity: .55; }
+.rw-dir { color: var(--muted); }
+.goal .chip.on { border-color: var(--goal); color: var(--goal); font-weight: 600; }
+
+/* The memory's summaries, under way */
+.mem-shrink { display: grid; gap: 4px; margin: 6px 0; font-size: 13px; color: var(--muted); }
+.mem-shrink progress { width: 100%; height: 6px; accent-color: var(--cobalt); }
+
+/* The editor's tools, at the end of the files bar */
+.file-tools { display: flex; margin-left: auto; position: sticky; right: 0; background: var(--paper); padding-left: 4px; flex: none; }
+.file-tools .file-more { font-family: var(--mono); font-size: 15px; }
+
+/* Find, over the editor */
+.find { flex: none; display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; padding: 6px 8px; background: var(--paper); border-bottom: 1px solid var(--line); }
+.find-row { display: flex; align-items: center; gap: 6px; }
+.find-row input { flex: 1; min-width: 0; font: 14px var(--mono); padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); }
+.find-count { font-size: 12px; color: var(--muted); min-width: 3em; text-align: right; white-space: nowrap; }
+.find-btn { width: 32px; height: 32px; border-radius: 6px; color: var(--muted); flex: none; font-size: 15px; }
+@media (hover: hover) { .find-btn:hover { background: var(--sunken); color: var(--ink); } }
+.find-files { display: flex; flex-wrap: wrap; gap: 4px; }
+.find-files:empty { display: none; }
+.ed-marks mark.hit { background: color-mix(in srgb, var(--warn) 30%, transparent); text-decoration: none; }
+.ed-marks mark.hit.cur { background: color-mix(in srgb, var(--warn) 70%, transparent); outline: 1px solid var(--warn); }
+.goal-body > .rw { white-space: normal; }
+.rw .row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }

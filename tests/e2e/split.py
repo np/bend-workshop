@@ -17,6 +17,10 @@ with sync_playwright() as p:
         page.wait_for_selector("#verdict[data-state=goal]", timeout=30000); time.sleep(0.5)
         page.evaluate("document.querySelector('#ed-ta').blur()")
         print("==", locale, "| head:", chips(page), "| boxes:", page.locator(".goal-body input").count())
+        # cancel path, with several variables to pick from
+        page.locator(".goal-head .chip", has_text="Découper" if locale.startswith("fr") else "Split").first.click(); time.sleep(0.2)
+        page.locator(".goal-head .chip", has_text="Annuler" if locale.startswith("fr") else "Cancel").first.click(); time.sleep(0.2)
+        print("   after cancel:", chips(page)[:3])
         page.locator(".goal-head .chip", has_text="Découper" if locale.startswith("fr") else "Split").click(); time.sleep(0.2)
         boxes = page.locator(".goal-body input")
         print("   picking:", chips(page), "| boxes:", boxes.count(), "| disabled:", [boxes.nth(i).is_disabled() for i in range(boxes.count())],
@@ -29,10 +33,15 @@ with sync_playwright() as p:
         body = code(page).split("-> U32:\n")[1]
         print("   match:", body.split("\n")[0], "| cases:", [l.strip() for l in body.split("\n") if l.strip().startswith("case")])
         print("   holes:", [l.strip() for l in body.split("\n") if "?" in l][:3], "… | verdict:", page.inner_text("#verdict-text")[:16], "| head after:", chips(page)[:2])
-        # cancel path
-        page.locator(".goal-head .chip", has_text="Découper" if locale.startswith("fr") else "Split").first.click(); time.sleep(0.2)
-        page.locator(".goal-head .chip", has_text="Annuler" if locale.startswith("fr") else "Cancel").first.click(); time.sleep(0.2)
-        print("   after cancel:", chips(page)[:3])
+        # one variable to split on: split at once; each case its own scope,
+        # so a field keeps its name in every case
+        set_code(page, "import Base\n\ntype P is Data:\n  A{x: Nat, y: Nat}\n  B{x: Nat}\n\ndef f(p: P) -> Nat:\n  ?g\n")
+        page.wait_for_selector("#verdict[data-state=goal]", timeout=30000); time.sleep(0.5)
+        page.evaluate("document.querySelector('#ed-ta').blur()")
+        page.locator(".goal-head .chip", has_text="Découper" if locale.startswith("fr") else "Split").first.click(); time.sleep(1.0)
+        cases = [l.strip() for l in code(page).split("\n") if l.strip().startswith("case")]
+        print("   one variable:", cases)
+        assert cases == ["case A{x, y}:", "case B{x}:"], cases
         for e in errs: print("!!", e[:200])
         page.close()
     b.close()

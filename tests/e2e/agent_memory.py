@@ -9,7 +9,7 @@ from serve import serve, shot
 serve("dist", 8123)
 MOCK = """window.__plan = []; window.__inputs = []; window.__says = []; window.__got = []; window.__compactions = 0;
 window.claude = { use: async (n) => n === 'sample' ? Object.assign(async (input, opts) => {
-  if (opts.modelTier === 'quick' && !opts.tools) { window.__compactions++; return { text: 'summary line ' + window.__compactions, truncated: false }; }
+  if (opts.modelTier === 'quick' && !opts.tools) { window.__compactions++; await new Promise(r => setTimeout(r, window.__slow || 0)); return { text: 'summary line ' + window.__compactions, truncated: false }; }
   window.__inputs.push(input);
   const tools = opts.tools || [];
   const call = async (name, args) => { const tl = tools.find(t => t.name === name);
@@ -62,7 +62,7 @@ with sync_playwright() as p:
     page.click(".tab[data-tab=agent]"); time.sleep(0.3)
 
     # 2 one session, two calls: the second sees the first in its memory, and zooms
-    plan = [[["lookup", {"name": "Nat.add"}], ["read_file", {"path": "main.bend"}], ["check", {}]],
+    plan = [[["lookup", {"name": "Nat.add"}], ["read_file", {"path": "main.bend"}], ["read_file", {"path": "Base", "to_line": 3}], ["check", {}]],
             [["zoom", {"id": 2}], ["fill_hole", {"hole": "base", "code": "{==}"}]]]
     says = ["Looked around.\nNEXT: fill ?base with {==}, then ?step by induction.\nSTATUS: continue", "Filled ?base.\nSTATUS: done"]
     ins = run(page, plan, says)
@@ -72,8 +72,21 @@ with sync_playwright() as p:
     check("2 second call: what the first did", "tool: lookup" in c2, "tool: read_file" in c2, "agent: Looked around." in c2, "fill ?base with {==}" in c2)
     check("2 the rule says what <chat> is", "<chat> is your memory" in second, "<task>\nProve add_zero." in second)
     got = page.evaluate("window.__got")
+    import json
+    base = json.loads([r for n, r in got if n == "read_file"][1])
+    check("2 read_file Base:", base["path"] == "Base", base["total_lines"] > 100)
+    check("2 the rights come after the memory and the files:", second.rindex("<rights>\n") > second.index("</chat>"),
+          second.rindex("<rights>\n") > second.index("</files>"), "locked by the user" not in second[:second.index("<chat>")])
     zoom = [r for n, r in got if n == "zoom"][0]
     check("2 zoom(2) gives the lookup whole", '"kind": "tool"' in zoom, "Nat.add" in zoom)
+
+    # 2b the tab follows a change of language at once
+    page.click("#btn-settings"); time.sleep(0.2)
+    page.click(".sheet .btn:has-text('Français')"); time.sleep(0.5)
+    fr = page.inner_text("#pane-agent")
+    page.click(".sheet .btn:has-text('English')"); time.sleep(0.5)
+    page.click(".sheet-head button"); time.sleep(0.3)
+    check("2b language:", "Nouvelle session" in fr or "Mémoire" in fr, "New session" in page.inner_text("#pane-agent"))
 
     # 3 a new session sees the first one, its end and its verdict
     ins = run(page, [[["check", {}]]], ["Checked.\nSTATUS: done"], task="What is left?")
@@ -104,7 +117,12 @@ with sync_playwright() as p:
     page.locator(".ai-limits label", has_text="memory").locator("input").fill("2500"); time.sleep(0.2)
     page.click(".sheet-head button")
     page.locator(".agent-modes .chip", has_text="Journal").click(); time.sleep(0.2)
+    page.evaluate("""() => { window.__slow = 150; window.__bar = [];
+      new MutationObserver(() => { const b = document.querySelector('.mem-shrink progress'); if (b) window.__bar.push(Number(b.value)); })
+        .observe(document.body, { subtree: true, childList: true }); }""")
     ins = run(page, [[["list_holes", {}]]], ["Listed.\nSTATUS: done"], task="List the holes.")
+    bar = page.evaluate("window.__bar")
+    check("6 a bar while summarising:", bar[:6], len(bar) > 0, page.locator(".mem-shrink").count() == 0)
     c = chat_of(ins[0])
     import re
     spans = [int(m) for m in re.findall(r"^\d+\+(\d+)\|", c[7:], re.M)]

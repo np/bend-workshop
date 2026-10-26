@@ -197,13 +197,17 @@ Name a minor item in a word or two rather than drop it. Copy names, numbers, pat
   }
 
   // Past its budget, the view merges its most due pairs, jobs at a time,
-  // down to half. Answers how many merges, and how many compactions.
-  async function mem_shrink(m, high, ask, jobs, ctx) {
+  // down to half. Answers how many merges, and how many compactions;
+  // step(part), if given, hears how far it is (0 to 1) after each batch.
+  async function mem_shrink(m, high, ask, jobs, ctx, step) {
     let merged = 0;
     let asked = 0;
-    if (mem_size(m) <= high) {
+    const from = mem_size(m);
+    if (from <= high) {
       return { merged, asked };
     }
+    const told = (part) => step && step(Math.max(0, Math.min(1, part)));
+    told(0);
     for (let guard = 0; guard < 100000 && mem_size(m) > high / 2; guard++) {
       const pairs = mem_pairs(m).slice(0, Math.max(1, jobs));
       if (pairs.length === 0) {
@@ -222,7 +226,9 @@ Name a minor item in a word or two rather than drop it. Copy names, numbers, pat
           break;
         }
       }
+      told((from - mem_size(m)) / (from - high / 2));
     }
+    told(1);
     return { merged, asked };
   }
 

@@ -20,7 +20,7 @@
     running: false, writing: false, paused: null, steps: 0, budget: 20, size: 20,
     log: [], ctl: null, queue: Promise.resolve(), mode: "project", holes: [], close: false,
     entry: "", task: "", before: null, done: false, last: "", raf: 0,
-    trace: [], t0: 0, wall: 0, notes: [], ended: "", note_draft: "", lim: null, mem: null,
+    trace: [], t0: 0, wall: 0, notes: [], ended: "", note_draft: "", lim: null, mem: null, shrink: null,
   };
 
   // Everything said and done in a session, for whoever debugs it: what the
@@ -99,7 +99,7 @@
       { name: "list_files", run: tool_list, schema: S({}),
         description: "Lists the project's files (with the holes each holds and whether it is locked to you), the hub modules (read-only) and the file checks start from. Returns JSON." },
       { name: "read_file", run: tool_read, schema: S({ path: str, from_line: { type: "integer" }, to_line: { type: "integer" } }, ["path"]),
-        description: "Returns the text of a project file or of a hub module (path starting hub:), whole or lines from_line..to_line (1-based)." },
+        description: "Returns the text of a project file, of Base (path Base) or of a hub module (path starting hub:), whole or lines from_line..to_line (1-based)." },
       { name: "list_symbols", run: tool_symbols, schema: S({ module: str, prefix: str }, ["module"]),
         description: "Lists the symbols a module declares (defs, laws, types and their constructors), with their kind and line. module: a project file path, a hub module (hub:...), or Base; prefix narrows the list (e.g. List. in Base)." },
       { name: "signature", run: tool_signature, schema: S({ name: str, file: str }, ["name"]),
@@ -197,7 +197,17 @@
       return;
     }
     const lim = agent.lim || agent_limits(cfg);
-    const r = await mem_shrink(agent.mem, lim.memory, mem_asker(cfg), cfg.provider === "claude" ? 3 : 6, lim.ctx);
+    // the summaries can take a while: a bar shows how far they are
+    let r;
+    try {
+      r = await mem_shrink(agent.mem, lim.memory, mem_asker(cfg), cfg.provider === "claude" ? 3 : 6, lim.ctx, (part) => {
+        agent.shrink = part;
+        agent_paint_soon();
+      });
+    } finally {
+      agent.shrink = null;
+      agent_paint_soon();
+    }
     if (r.merged > 0) {
       trace("memory", { merged: r.merged, compactions: r.asked, view: mem_size(agent.mem), messages: agent.mem.msgs.length });
       mem_save(agent.proj);
@@ -215,6 +225,10 @@
   }
 
   function agent_text_of(path) {
+    // Base reads like a file of its own, though no file holds it
+    if (/^(hub:)?base(\.bend)?$/i.test(path)) {
+      return Core.base_text();
+    }
     if (path.startsWith("hub:")) {
       const text = hub.files[path.slice(4)];
       if (text === undefined) {
@@ -224,7 +238,7 @@
     }
     const f = state.files.find((x) => x.name === path);
     if (!f) {
-      throw new Error("no file " + path + " (list_files gives the paths)");
+      throw new Error("no file " + path + " (list_files gives the paths; Base is Base)");
     }
     return f.text;
   }
@@ -792,10 +806,7 @@
     const rules = [
       "You are an agent at work in the Bend 2 workshop, a web page that runs Bend's own checker and compiler. Bend 2 is a functional language with dependent types, affine variables and a termination checker; its syntax is Python-shaped, its semantics close to Lean.",
       "Change the project only through your tools. Read before you edit; use lookup for the signature of any name you use, and guide for the syntax.",
-      agent.mode === "holes"
-        ? "You may only fill these holes, with fill_hole: " + agent.holes.map((h) => "?" + h).join(", ") + ". Nothing else in the project can change."
-          + (agent.close ? " Each fill must close its goal: the code may not hold a ?hole." : " The code may leave new holes ?name for sub-goals: they become yours to fill too.")
-        : "You may change any file" + (locks.length ? " except these, locked by the user: " + locks.join(", ") : "") + ". Base and hub modules are read-only.",
+      "What you may change is in <rights>, near the end: the user may change it between calls. Base (read_file \"Base\") and hub modules are read-only.",
       "Every write is checked at once and the verdict comes back to you. Rely on it: a proof counts only when the checker accepts it, the verdict reading ALL PROOFS CHECK. Never claim that something works unless a check or a run showed it.",
       "Prefer small steps: one hole, one lemma, one fix at a time, then look at the verdict. A ?name in the code prints its goal on the next check, with its context: use that to see what is wanted.",
       "<chat> is your memory: this project's whole chat with you, across sessions, oldest first, as one-line summaries. Each line id+n|text stands for the n messages from id on. Kinds: user (the user's words), agent (your replies), tool (your tool calls, each with what it returned), note (the page's records: sessions started and ended, final checks, undos). Recent lines cover one message each; the older, the more a line covers. A long message shows as its beginning, then (zoom for all). Its latest word on a thing is the truth, except for the files, which <files> gives as they stand now. zoom(id, n) opens line id+n into the two lines under it, zoom(id, 1) gives message id whole, and search(text) finds the messages that hold a text. Zoom whenever a line only mentions what you need (a past attempt, an error, a decision) before you act, guess or ask; do not redo what <chat> shows done.",
@@ -809,6 +820,12 @@
     const files = state.files.filter((f) => /\.(bend|js)$/.test(f.name));
     const size = files.reduce((n, f) => n + f.text.length, 0);
     const chat = agent.mem === null || agent.mem.msgs.length === 0 ? "(empty: this is the project's first message)" : mem_lines(agent.mem).join("\n");
+    // the rights come late, so that changing them leaves the head of the
+    // prompt (rules, reference, memory) as it was, cached
+    const rights = agent.mode === "holes"
+      ? "You may only fill these holes, with fill_hole: " + agent.holes.map((h) => "?" + h).join(", ") + ". Nothing else in the project can change."
+        + (agent.close ? " Each fill must close its goal: the code may not hold a ?hole." : " The code may leave new holes ?name for sub-goals: they become yours to fill too.")
+      : "You may change any file" + (locks.length ? " except these, locked by the user: " + locks.join(", ") : "") + ".";
     const build = (inline) => {
       const parts = [rules.join("\n\n"), "<bend_reference>\n" + ref + "\n</bend_reference>", "<chat>\n" + chat + "\n</chat>",
         "<state>\nChecks start from " + agent.entry + ".\n" + JSON.stringify(tool_list(), null, 1) + "\n</state>"];
@@ -818,6 +835,7 @@
       } else {
         parts.push("The files are too large to quote here: read them with read_file.");
       }
+      parts.push("<rights>\n" + rights + "\n</rights>");
       if (agent.ended !== "") {
         // a session taken up again: why it stopped, and what the user says now
         parts.push("<resumed>\nThis session stopped once (" + agent.ended + ") and the user took it up again."
@@ -2014,7 +2032,13 @@
           onclick: () => agent.paused && agent.paused(true) }));
       }
       head.append(el("button", { class: "btn danger", type: "button", text: t("stop"), onclick: agent_stop }));
-      box.append(head, el("p", { class: "agent-task-shown", text: agent.task }));
+      box.append(head);
+      if (typeof agent.shrink === "number") {
+        const pc = Math.round(agent.shrink * 100);
+        box.append(el("div", { class: "mem-shrink", role: "status" }, el("span", { text: t("mem_shrinking", pc) }),
+          el("progress", { max: "100", value: String(pc), "aria-label": t("mem_shrinking", pc) })));
+      }
+      box.append(el("p", { class: "agent-task-shown", text: agent.task }));
     } else if (agent.done) {
       // a finished session: what it was asked, then what it did
       box.append(el("p", { class: "agent-task-shown", text: agent.task }));

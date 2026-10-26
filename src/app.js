@@ -617,23 +617,41 @@
   }
 
   // The exact span of the error, underlined on a layer of its own: the same
-  // text in the same font, invisible but for the marks.
+  // text in the same font, invisible but for the marks; and what the find
+  // bar finds, on the same layer.
   function ed_marks(text) {
+    const spans = [];
     const w = ed.err;
-    if (w === null) {
+    if (w !== null) {
+      const a = text_offset(text, w.line, w.col);
+      let b = Math.max(a, text_offset(text, w.end_line, w.end_col));
+      if (w.end_line - w.line > 12) {
+        const nl = text.indexOf("\n", a);
+        b = nl < 0 ? text.length : nl;
+      }
+      if (b === a && a < text.length && text[a] !== "\n") {
+        b = a + 1;
+      }
+      spans.push([a, b, b === a ? "eol" : ""]);
+    }
+    if (find.on && find.q !== "") {
+      find_hits(text).forEach((a, k) => spans.push([a, a + find.q.length, k === find.cur ? "hit cur" : "hit"]));
+    }
+    if (spans.length === 0) {
       return "";
     }
-    const a = text_offset(text, w.line, w.col);
-    let b = Math.max(a, text_offset(text, w.end_line, w.end_col));
-    if (w.end_line - w.line > 12) {
-      const nl = text.indexOf("\n", a);
-      b = nl < 0 ? text.length : nl;
+    spans.sort((x, y) => x[0] - y[0] || (y[2].startsWith("hit") ? 1 : 0) - (x[2].startsWith("hit") ? 1 : 0));
+    let out = "";
+    let at = 0;
+    for (const [a, b, cls] of spans) {
+      if (a < at) {
+        continue;
+      }
+      out += esc(text.slice(at, a)) + (b === a ? "<mark class=\"eol\"> </mark>"
+        : "<mark" + (cls ? " class=\"" + cls + "\"" : "") + ">" + esc(text.slice(a, b)) + "</mark>");
+      at = b;
     }
-    if (b === a && a < text.length && text[a] !== "\n") {
-      b = a + 1;
-    }
-    const mid = b === a ? "<mark class=\"eol\"> </mark>" : "<mark>" + esc(text.slice(a, b)) + "</mark>";
-    return esc(text.slice(0, a)) + mid + esc(text.slice(b)) + "\n";
+    return out + esc(text.slice(at)) + "\n";
   }
 
   function ed_measure() {
@@ -655,6 +673,9 @@
     }
     ed.gut.innerHTML = g;
     ed.marks.innerHTML = ed_marks(text);
+    if (find.on) {
+      find_info();
+    }
     ed.mark.hidden = ed.err_line === 0 || ed.err_line > n;
     if (!ed.mark.hidden) {
       ed.mark.style.top = (ed.pad + (ed.err_line - 1) * ed.lh) + "px";
@@ -777,6 +798,141 @@
     ed.ta.setSelectionRange(a + da, a === b ? a + da : b + dt);
   }
 
+  // Comments the lines the selection touches out (# at their least
+  // indentation), or back in when they all are comments.
+  function ed_comment() {
+    const v = ed.ta.value;
+    const a = ed.ta.selectionStart;
+    const b = ed.ta.selectionEnd;
+    const from = v.lastIndexOf("\n", a - 1) + 1;
+    let to = v.indexOf("\n", b > a && v[b - 1] === "\n" ? b - 1 : b);
+    to = to < 0 ? v.length : to;
+    const lines = v.slice(from, to).split("\n");
+    const full = lines.filter((l) => l.trim() !== "");
+    if (full.length === 0) {
+      return;
+    }
+    const off = full.every((l) => /^\s*#/.test(l));
+    const ind = Math.min(...full.map((l) => /^ */.exec(l)[0].length));
+    const next = lines.map((l) => (l.trim() === "" ? l : off ? l.replace(/^(\s*)# ?/, "$1") : l.slice(0, ind) + "# " + l.slice(ind))).join("\n");
+    ed.ta.focus({ preventScroll: true });
+    ed.ta.setSelectionRange(from, to);
+    ed_insert(next);
+    ed.ta.setSelectionRange(from, from + next.length);
+  }
+
+  // Find
+  // ====
+  // A bar over the editor: the text found in the open file (any case),
+  // marked where it stands, the current one brighter; the other files that
+  // hold it, one tap away. Typing stays in the bar.
+
+  const find = { on: false, q: "", cur: -1 };
+
+  function find_hits(text) {
+    const out = [];
+    const q = find.q.toLowerCase();
+    const low = text.toLowerCase();
+    for (let i = low.indexOf(q); i >= 0 && out.length < 2000; i = low.indexOf(q, i + Math.max(1, q.length))) {
+      out.push(i);
+    }
+    return out;
+  }
+
+  function find_open() {
+    const bar = $("#find");
+    const sel = ed.ta.value.slice(ed.ta.selectionStart, ed.ta.selectionEnd);
+    if (!find.on) {
+      find.on = true;
+      bar.hidden = false;
+      bar.textContent = "";
+      const input = el("input", { id: "find-q", type: "search", spellcheck: "false", autocapitalize: "off", autocomplete: "off",
+        autocorrect: "off", placeholder: t("find_ph"), "aria-label": t("find_ph"), enterkeyhint: "search" });
+      input.addEventListener("input", () => {
+        find.q = input.value;
+        find_go(0, true);
+      });
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          find_go(e.shiftKey ? -1 : 1);
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          find_close(true);
+        }
+      });
+      const btn = (text, aria, fn) => el("button", { class: "find-btn", type: "button", text, "aria-label": aria, onclick: fn });
+      bar.append(el("div", { class: "find-row" }, input, el("span", { class: "find-count", id: "find-count" }),
+        btn("↑", t("find_prev"), () => find_go(-1)), btn("↓", t("find_next"), () => find_go(1)),
+        btn("✕", t("close"), () => find_close(true))), el("div", { class: "find-files", id: "find-files" }));
+    }
+    const input = $("#find-q");
+    if (sel !== "" && !sel.includes("\n")) {
+      input.value = sel;
+      find.q = sel;
+    }
+    input.focus();
+    input.select();
+    find_go(0, true);
+  }
+
+  function find_close(back) {
+    find.on = false;
+    find.cur = -1;
+    $("#find").hidden = true;
+    ed_paint_soon();
+    if (back) {
+      ed.ta.focus({ preventScroll: true });
+    }
+  }
+
+  // To the next hit (dir 1), the one before (-1), or the first from the
+  // caret on (0); fresh: the caret is where a new search starts.
+  function find_go(dir, fresh) {
+    const text = ed.ta.value;
+    const hits = find.q === "" ? [] : find_hits(text);
+    if (hits.length === 0) {
+      find.cur = -1;
+    } else if (dir === 0) {
+      const from = fresh ? ed.ta.selectionStart : 0;
+      const k = hits.findIndex((a) => a >= from);
+      find.cur = k < 0 ? 0 : k;
+    } else {
+      find.cur = ((find.cur < 0 ? (dir > 0 ? -1 : 0) : find.cur) + dir + hits.length) % hits.length;
+    }
+    if (find.cur >= 0) {
+      const a = hits[find.cur];
+      ed.ta.setSelectionRange(a, a + find.q.length);
+      ed_reveal();
+    }
+    ed_paint_soon();
+  }
+
+  // The count, and the other files that hold the text.
+  function find_info() {
+    const count = $("#find-count");
+    const files = $("#find-files");
+    if (!count || !files) {
+      return;
+    }
+    const n = find.q === "" ? 0 : find_hits(ed.ta.value).length;
+    count.textContent = find.q === "" ? "" : n === 0 ? t("find_none") : (find.cur + 1) + "/" + n;
+    files.textContent = "";
+    if (find.q === "") {
+      return;
+    }
+    state.files.forEach((f, i) => {
+      const k = i === state.active && view.hub === null ? 0 : find_hits(f.text).length;
+      if (k > 0) {
+        files.append(el("button", { class: "chip", type: "button", text: f.name + " · " + k, onclick: () => {
+          files_pick(i);
+          find_go(0, false);
+          $("#find-q").focus();
+        } }));
+      }
+    });
+  }
+
   function ed_init() {
     const has_before = typeof InputEvent !== "undefined"
       && typeof InputEvent.prototype.getTargetRanges === "function";
@@ -801,6 +957,12 @@
       if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
         e.preventDefault();
         run_start(true);
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        find_open();
+      } else if ((e.ctrlKey || e.metaKey) && e.key === "/") {
+        e.preventDefault();
+        ed_comment();
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
         e.preventDefault();
         run_start(false);
@@ -1552,6 +1714,27 @@
       const lines = pp(text, cols - lead.length);
       return lead + lines.join("\n" + " ".repeat(lead.length)) + "\n";
     };
+    // an error first: under the goals it would be lost
+    if (!r.open) {
+      if (r.where) {
+        box.append(el("span", { class: "err", text: "✗ " }), goto_link(where_label(r.where), r.where), "\n");
+      }
+      box.append(el("span", { class: "errbody", text: r.text + "\n" }));
+      const dup = copy_plan(r);
+      if (dup) {
+        box.append(el("span", { class: "goto", role: "link", tabindex: "0", text: t("copy_fix", dup.name),
+          onclick: () => copy_put(dup),
+          onkeydown: (e) => { if (e.key === "Enter") { copy_put(dup); } } }), "\n");
+      }
+      if (ai.on()) {
+        box.append(el("span", { class: "goto", role: "link", tabindex: "0", text: t("ai_explain"),
+          onclick: () => ai_sheet({ kind: "error", r }),
+          onkeydown: (e) => { if (e.key === "Enter") { ai_sheet({ kind: "error", r }); } } }), "\n");
+      }
+      if ((r.goals || []).length > 0) {
+        box.append("\n");
+      }
+    }
     for (const g of r.goals || []) {
       box.append(el("span", { class: "goalmark", text: "? " }),
         goto_link("?" + g.name + "  " + t("where_line", g.file, g.line), goal_where(g)), "\n");
@@ -1562,18 +1745,117 @@
     }
     if (r.open) {
       box.append(el("span", { class: "goalmark", text: open_brief(r) + "\n" }));
-      return box;
-    }
-    if (r.where) {
-      box.append(el("span", { class: "err", text: "✗ " }), goto_link(where_label(r.where), r.where), "\n");
-    }
-    box.append(el("span", { class: "errbody", text: r.text + "\n" }));
-    if (ai.on()) {
-      box.append(el("span", { class: "goto", role: "link", tabindex: "0", text: t("ai_explain"),
-        onclick: () => ai_sheet({ kind: "error", r }),
-        onkeydown: (e) => { if (e.key === "Enter") { ai_sheet({ kind: "error", r }); } } }), "\n");
     }
     return box;
+  }
+
+  // Copies
+  // ======
+  // A parameter consumed more than once must be copied: the def's body
+  // opens with `match a b:` / `case +a +b:`. The fix of such an error adds
+  // the parameter to that match, or writes one around the body.
+
+  function copy_plan(r) {
+    const m = /^- observed : ([A-Za-z_]\w*) \(consumed more than once\)$/m.exec(r.text || "");
+    if (!m || !r.where) {
+      return null;
+    }
+    const file = r.where.file || file_now().name;
+    const f = state.files.find((x) => x.name === file);
+    if (!f) {
+      return null;
+    }
+    const lines = f.text.split("\n");
+    const at = r.where.line - 1;
+    if ((lines[at] || "").slice(r.where.col - 1, r.where.col - 1 + m[1].length) !== m[1]) {
+      return null;
+    }
+    // the def whose header holds the binder, and where its body starts
+    let top = at;
+    while (top >= 0 && !/^\s*def\s/.test(lines[top])) {
+      top--;
+    }
+    if (top < 0) {
+      return null;
+    }
+    let depth = 0;
+    let end = -1;
+    for (let k = top; k < lines.length && end < 0; k++) {
+      for (const ch of lines[k].replace(/#.*$/, "")) {
+        depth += "([{".includes(ch) ? 1 : ")]}".includes(ch) ? -1 : 0;
+      }
+      if (depth === 0 && /:\s*(#.*)?$/.test(lines[k])) {
+        end = k;
+      }
+    }
+    if (end < at) {
+      return null;
+    }
+    return { name: m[1], file, top, end };
+  }
+
+  // The body of the def, with name copied: in the copying match that opens
+  // it, or in a new one.
+  function copy_body(text, dup) {
+    const lines = text.split("\n");
+    const ind = (s) => /^\s*/.exec(s)[0].length;
+    const own = ind(lines[dup.top]);
+    let first = dup.end + 1;
+    while (first < lines.length && lines[first].trim() === "") {
+      first++;
+    }
+    if (first >= lines.length || ind(lines[first]) <= own) {
+      return null;
+    }
+    let last = first;
+    for (let k = first; k < lines.length; k++) {
+      if (lines[k].trim() !== "") {
+        if (ind(lines[k]) <= own) {
+          break;
+        }
+        last = k;
+      }
+    }
+    const pad = " ".repeat(ind(lines[first]));
+    const mt = /^match ((?:[A-Za-z_]\w*\s*)+):$/.exec(lines[first].trim());
+    let next = first + 1;
+    while (next <= last && lines[next].trim() === "") {
+      next++;
+    }
+    const cs = mt && next <= last ? /^case ((?:\+[A-Za-z_]\w*\s*)+):$/.exec(lines[next].trim()) : null;
+    const names = mt ? mt[1].trim().split(/\s+/) : [];
+    const pats = cs ? cs[1].trim().split(/\s+/).map((x) => x.slice(1)) : [];
+    const more = lines.slice(next + 1, last + 1).some((l) => l.trim() !== "" && ind(l) <= ind(lines[next]));
+    if (cs && !more && names.join(" ") === pats.join(" ")) {
+      if (names.includes(dup.name)) {
+        return null;
+      }
+      lines[first] = pad + "match " + names.concat(dup.name).join(" ") + ":";
+      lines[next] = /^\s*/.exec(lines[next])[0] + "case " + pats.concat(dup.name).map((x) => "+" + x).join(" ") + ":";
+      return { text: lines.join("\n"), line: next + 1 };
+    }
+    const body = lines.slice(first, last + 1).map((l) => (l.trim() === "" ? l : "    " + l));
+    lines.splice(first, last - first + 1, pad + "match " + dup.name + ":", pad + "  case +" + dup.name + ":", ...body);
+    return { text: lines.join("\n"), line: first + 2 };
+  }
+
+  function copy_put(dup) {
+    const i = state.files.findIndex((x) => x.name === dup.file);
+    if (i < 0) {
+      return;
+    }
+    if (i !== state.active) {
+      files_pick(i);
+    }
+    const next = copy_body(ed.ta.value, dup);
+    if (next === null) {
+      toast(t("copy_none", dup.name));
+      return;
+    }
+    const keep = work_snapshot();
+    ed_rewrite(next.text);
+    ed_goto(next.line, 1);
+    toast(t("copy_done", dup.name), t("undo"), () => work_restore(keep));
   }
 
   // The block above the log always holds the latest live check of the open
@@ -2030,6 +2312,13 @@
             onclick: () => refine(c) }));
         }
       }
+      if (!c.gone && !picking && /^\{.* == .*\}$/s.test(c.expected.trim())) {
+        tools.push(el("button", { class: "chip" + (c.rw !== undefined ? " on" : ""), type: "button", text: t("rw"), "aria-label": t("rw_aria"),
+          onclick: () => {
+            c.rw = c.rw === undefined ? { eq: rw_guess(c), busy: false, err: "", eqty: null, cands: null } : undefined;
+            goals_paint();
+          } }));
+      }
       if (!c.gone && !picking) {
         tools.push(el("button", { class: "chip", type: "button", text: t("lemma"), "aria-label": t("lemma_aria"),
           onclick: () => {
@@ -2044,12 +2333,18 @@
         tools.push(el("button", { class: "chip" + (can ? "" : " off"), type: "button", text: t("split"),
           "aria-disabled": String(!can), "aria-label": can ? t("split_aria") : why, title: why,
           onclick: () => {
-            if (can) {
-              c.split = new Set();
-              goals_paint();
-            } else {
+            if (!can) {
               toast(why);
+              return;
             }
+            // one variable to split on: no need to ask which
+            const vs = split_vars(c);
+            if (vs.length === 1) {
+              split_case(c, vs);
+              return;
+            }
+            c.split = new Set();
+            goals_paint();
           } }));
       } else if (lemming) {
         const name = el("input", { class: "lemma-name", type: "text", value: c.lemma_name, spellcheck: "false",
@@ -2117,6 +2412,9 @@
         body.append(row);
       }
       body.append(goal_turn(c, cols));
+      if (c.rw !== undefined && !c.gone) {
+        body.append(rw_panel(c, cols));
+      }
       if (c.refine !== undefined && !c.gone) {
         const row = el("div", { class: "cands" });
         if (c.refine === "busy") {
@@ -2218,6 +2516,7 @@
   }
 
   function refine_list(c, text) {
+    c.ref_imp = null;
     const exp = (c.normal || c.expected).trim();
     const holes = new Set();
     const hole = (want) => {
@@ -2245,7 +2544,9 @@
       return [];
     }
     const raw = (/^[A-Za-z_][\w.]*/.exec(exp) || [""])[0];
-    return ctors_for(raw, c.file).map((d) => d.name + "{" + d.params.map((p) => hole(param_name(p))).join(", ") + "}");
+    const ctors = ctors_for(raw, c.file);
+    c.ref_imp = ctors.imp;
+    return ctors.map((d) => d.name + "{" + d.params.map((p) => hole(param_name(p))).join(", ") + "}");
   }
 
   // The file with the hole replaced by a term.
@@ -2257,7 +2558,8 @@
       return null;
     }
     lines[c.line - 1] = l.slice(0, at) + term + l.slice(at + c.name.length + 1);
-    return lines.join("\n");
+    // a constructor that needs an import of its own module gets it
+    return c.ref_imp && /^[A-Za-z_]\w*\./.test(term) ? mv_add_import(lines.join("\n"), c.ref_imp) : lines.join("\n");
   }
 
   // Tries every candidate in the checker; the results are kept with the
@@ -2400,15 +2702,193 @@
     ed.ta.focus({ preventScroll: true });
     ed.ta.setSelectionRange(from, from + c.name.length + 1);
     ed_insert(term);
+    let shift = 0;
+    if (c.ref_imp && /^[A-Za-z_]\w*\./.test(term)) {
+      shift = ed_add_import(c.ref_imp).len;
+    }
     const first = /\?[A-Za-z_][\w.]*/.exec(term);
     if (first) {
-      ed.ta.setSelectionRange(from + first.index, from + first.index + first[0].length);
+      ed.ta.setSelectionRange(from + shift + first.index, from + shift + first.index + first[0].length);
     }
     ed_reveal();
     c.refine = undefined;
     toast(t("refined", term), t("undo"), () => work_restore(keep));
   }
 
+
+  // Rewrite
+  // =======
+  // An equality e : {a == b : T} rewrites the goal: %e : P, P the goal with
+  // _ marking b, leaves P with a there. The card asks for e (a hypothesis,
+  // a lemma's call), learns its type from the checker (a copy of the file
+  // where the hole is `__eq = e` then the hole), and offers every place of
+  // the goal where b stands (or a, through Equal.sym), each tried first,
+  // shown with the goal it leaves. One that leaves both sides the same is
+  // written with {==} after it, closing the goal.
+
+  // An equality of the context, the first guess.
+  function rw_guess(c) {
+    const h = c.ctx.find(([, ty]) => /^\{.* == .* : .*\}$/s.test(ty.trim()));
+    return h ? h[0] : "";
+  }
+
+  // {a == b : T} as [a, b, T], at the top level only.
+  function rw_eq(ty) {
+    const flat = ty.replace(/\s*\n\s*/g, " ").trim();
+    if (!/^\{.*\}$/.test(flat)) {
+      return null;
+    }
+    const inner = flat.slice(1, -1);
+    const colon = top_split(inner, " : ");
+    const sides = top_split(colon.slice(0, -1).join(" : "), " == ");
+    return colon.length >= 2 && sides.length === 2 ? [sides[0].trim(), sides[1].trim(), colon[colon.length - 1].trim()] : null;
+  }
+
+  // Where a term stands in a text, as a whole (not inside a longer name).
+  function rw_places(text, term) {
+    const out = [];
+    for (let i = text.indexOf(term); i >= 0 && out.length < 12; i = text.indexOf(term, i + 1)) {
+      const before = text[i - 1] || " ";
+      const after = text[i + term.length] || " ";
+      if (!/[\w.]/.test(before) && !/[\w]/.test(after)) {
+        out.push(i);
+      }
+    }
+    return out;
+  }
+
+  // The file with the hole's line given other lines (at its indentation).
+  function rw_text(c, text, lines) {
+    const all = text.split("\n");
+    const cur = all[c.line - 1] || "";
+    if (cur.trim() !== "?" + c.name) {
+      return null;
+    }
+    const ind = /^\s*/.exec(cur)[0];
+    all.splice(c.line - 1, 1, ...lines.map((l) => ind + l));
+    return all.join("\n");
+  }
+
+  async function rw_find(c) {
+    const f = state.files.find((x) => x.name === c.file);
+    const e = c.rw.eq.trim();
+    if (!f || e === "") {
+      return;
+    }
+    if (!hole_alone(c)) {
+      c.rw.err = t("rw_alone");
+      goals_paint();
+      return;
+    }
+    c.rw.busy = true;
+    c.rw.err = "";
+    c.rw.cands = null;
+    goals_paint();
+    try {
+      const files = files_map();
+      const text = f.text;
+      // what e proves: the hole's context, with e bound to a name of its own
+      const probe = rw_text(c, text, ["__eq = " + e, "?" + c.name]);
+      const q = await comp_ask(c.file, false, { ...files, [c.file]: probe });
+      const g = (q.goals || []).find((x) => x.name === c.name);
+      const own = g && g.ctx.find(([k]) => k === "__eq");
+      const eq = own ? rw_eq(own[1]) : null;
+      if (!eq) {
+        c.rw.err = own ? t("rw_not_eq", own[1]) : t("rw_bad", q.ok || q.open ? "" : err_brief(q));
+        return;
+      }
+      c.rw.eqty = eq;
+      const tpl = lemma_templates(c);
+      const fix = (x) => (tpl.re ? x.replace(tpl.re, "~$1") : x);
+      const goal = fix(c.expected.replace(/\s*\n\s*/g, " ").trim());
+      const [a, b, ty] = eq.map(fix);
+      // b where it stands becomes a; a where it stands becomes b, the
+      // equality turned round
+      const tries = [];
+      for (const at of rw_places(goal, b)) {
+        tries.push({ dir: "ab", line: "%" + e + " : " + goal.slice(0, at) + "_" + goal.slice(at + b.length), at, len: b.length });
+      }
+      if (a !== b) {
+        for (const at of rw_places(goal, a)) {
+          tries.push({ dir: "ba", line: "%Equal.sym(" + ty + ", " + a + ", " + b + ", " + e + ") : " + goal.slice(0, at) + "_" + goal.slice(at + a.length),
+            at, len: a.length });
+        }
+      }
+      const out = [];
+      for (const k of tries.slice(0, 12)) {
+        const next = rw_text(c, text, [k.line, "?" + c.name]);
+        const r = await comp_ask(c.file, false, { ...files, [c.file]: next });
+        const after = (r.goals || []).find((x) => x.name === c.name);
+        const sides = after ? rw_eq(after.expected) : null;
+        out.push(Object.assign(k, { ok: !!after, after: after ? after.expected : "", why: after ? "" : err_brief(r),
+          closes: !!sides && sides[0] === sides[1] }));
+      }
+      if (state.files.find((x) => x.name === c.file).text !== text) {
+        return;
+      }
+      c.rw.cands = out;
+      if (out.length === 0) {
+        c.rw.err = t("rw_none", b, a);
+      }
+    } finally {
+      c.rw.busy = false;
+      goals_paint();
+    }
+  }
+
+  function rw_put(c, k) {
+    const i = state.files.findIndex((x) => x.name === c.file);
+    if (i < 0) {
+      return;
+    }
+    if (i !== state.active) {
+      files_pick(i);
+    }
+    const next = rw_text(c, ed.ta.value, [k.line, k.closes ? "{==}" : "?" + c.name]);
+    if (next === null) {
+      toast(t("ai_hole_gone"));
+      return;
+    }
+    const keep = work_snapshot();
+    c.rw = undefined;
+    ed_rewrite(next);
+    ed_goto(c.line + 1, 1);
+    toast(t(k.closes ? "rw_closed" : "rw_done"), t("undo"), () => work_restore(keep));
+  }
+
+  function rw_panel(c, cols) {
+    const box = el("div", { class: "rw" });
+    const input = el("input", { type: "text", value: c.rw.eq, spellcheck: "false", autocapitalize: "off", autocomplete: "off",
+      autocorrect: "off", placeholder: t("rw_ph"), "aria-label": t("rw_eq") });
+    input.addEventListener("input", () => { c.rw.eq = input.value; });
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        rw_find(c);
+      }
+    });
+    const hyps = c.ctx.filter(([, ty]) => rw_eq(ty) !== null).map(([k]) => k);
+    box.append(el("div", { class: "row" }, input,
+      el("button", { class: "chip go", type: "button", text: c.rw.busy ? t("checking") : t("rw_find"), disabled: c.rw.busy,
+        onclick: () => rw_find(c) })),
+      hyps.length ? el("div", { class: "row" }, el("small", { class: "dim", text: t("rw_hyps") }),
+        ...hyps.map((h) => el("button", { class: "chip", type: "button", text: h, onclick: () => { c.rw.eq = h; rw_find(c); } }))) : "");
+    if (c.rw.eqty) {
+      box.append(el("div", { class: "dim", html: highlight(c.rw.eqty[0] + " == " + c.rw.eqty[1] + " : " + c.rw.eqty[2]) }));
+    }
+    if (c.rw.err) {
+      box.append(el("div", { class: "rw-err", text: c.rw.err }));
+    }
+    for (const k of c.rw.cands || []) {
+      const shown = k.line.slice(k.line.indexOf(" : ") + 3);
+      box.append(el("button", { class: "rw-cand" + (k.ok ? " fits" : " bad"), type: "button", "aria-disabled": String(!k.ok),
+        title: k.ok ? "" : k.why, onclick: () => (k.ok ? rw_put(c, k) : toast(t("cand_bad", k.why))) },
+        el("span", { class: "rw-dir", text: k.dir === "ab" ? "→" : "←" }),
+        el("span", { html: highlight(shown) }),
+        k.ok ? el("small", { class: "dim", html: (k.closes ? "<b>{==}</b> " : "⊢ ") + highlight(pp(k.after, cols - 4).join(" ")) })
+          : el("small", { class: "dim", text: k.why })));
+    }
+    return box;
+  }
 
   // Lemma
   // =====
@@ -2531,6 +3011,28 @@
     return lines.join("\n");
   }
 
+  // The template parameters of the def a card's hole is in that its goal
+  // or context names (as def~f): their names, their parameters as the
+  // def's header writes them, and a pattern for def~f.
+  function lemma_templates(c) {
+    const d = decls_of(c.file).find((x) => x.kind === "def" && x.name === c.def);
+    const seen = (c.expected + "\n" + c.ctx.map(([, ty]) => ty).join("\n"));
+    if (!d || !seen.includes(c.def + "~")) {
+      return { names: [], params: [], re: null };
+    }
+    const names = [];
+    const params = [];
+    for (const p of d.params) {
+      const m = /^~\s*([A-Za-z_]\w*)/.exec(p.trim());
+      if (m && seen.includes(c.def + "~" + m[1])) {
+        names.push(m[1]);
+        params.push(p.trim().replace(/\s*:\s*/, ": "));
+      }
+    }
+    const esc_re = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return { names, params, re: new RegExp(esc_re(c.def) + "~([A-Za-z_]\\w*)", "g") };
+  }
+
   async function lemma_extract(c) {
     const name = (c.lemma_name || "").trim();
     if (!/^[A-Za-z_][\w]*(\.[A-Za-z_][\w]*)*$/.test(name)) {
@@ -2548,8 +3050,14 @@
     const need = lemma_needs(c);
     const vars = c.ctx.map(([k]) => k).filter((k) => need.has(k));
     const types = Object.fromEntries(c.ctx);
-    const params = vars.map((k) => (c.quant && c.quant[k] !== undefined ? c.quant[k] : "") + k + ": "
-      + types[k].replace(/\s*\n\s*/g, " "));
+    // a template parameter of the enclosing def is not in the context: the
+    // goal names it def~f; the lemma takes it as a template of its own,
+    // first, typed as the def's header types it, and is called with ~f
+    const tpl = lemma_templates(c);
+    const untpl = (text) => tpl.re ? text.replace(tpl.re, "~$1") : text;
+    const params = tpl.params.concat(vars.map((k) => (c.quant && c.quant[k] !== undefined ? c.quant[k] : "") + k + ": "
+      + untpl(types[k].replace(/\s*\n\s*/g, " "))));
+    const args = tpl.names.map((k) => "~" + k).concat(vars);
     const f = state.files[i];
     const lines = f.text.split("\n");
     const cur = lines[c.line - 1] || "";
@@ -2558,7 +3066,7 @@
       toast(t("ai_hole_gone"));
       return;
     }
-    lines[c.line - 1] = cur.slice(0, at) + name + "(" + vars.join(", ") + ")" + cur.slice(at + c.name.length + 1);
+    lines[c.line - 1] = cur.slice(0, at) + name + "(" + args.join(", ") + ")" + cur.slice(at + c.name.length + 1);
     const top = lemma_line(c, lines);
     // checked before it is written: the lemma's own hole is the one goal
     // expected; the laid-out header first, the one-line one if it misreads
@@ -2568,7 +3076,7 @@
     let next = null;
     let q = null;
     for (const plain of [false, true]) {
-      lemma = (lemma_text(name, params, c.expected, plain) + "\n  ?" + c.name + "\n").split("\n");
+      lemma = (lemma_text(name, params, untpl(c.expected), plain) + "\n  ?" + c.name + "\n").split("\n");
       const all = lines.slice();
       all.splice(top - 1, 0, ...lemma);
       next = all.join("\n");
@@ -2622,6 +3130,7 @@
     let target = null;
     let prefix = "";
     let rest = head;
+    let imp = null;
     if (dot > 0 && imps.has(head.slice(0, dot))) {
       target = imps.get(head.slice(0, dot));
       prefix = head.slice(0, dot + 1);
@@ -2633,7 +3142,17 @@
           rest = head.slice(stem.length + 1);
           target = x.name;
           const alias = [...imps].find(([, v]) => v === x.name);
-          prefix = x.name === file ? "" : alias ? alias[0] + "." : "";
+          if (x.name === file) {
+            prefix = "";
+          } else if (alias) {
+            prefix = alias[0] + ".";
+          } else if (f) {
+            // a type the file reaches only through another module: its
+            // constructors need an import of their own module
+            const a = mv_alias(f.text, file, mv_stem_alias(x.name));
+            prefix = a + ".";
+            imp = "import " + mv_relpath(file, x.name) + " as " + a;
+          }
           break;
         }
       }
@@ -2650,7 +3169,25 @@
         break;
       }
     }
+    out.imp = out.length > 0 ? imp : null;
     return out;
+  }
+
+  // The editor's text with an import added after its last one, through the
+  // undo stack; answers where it went and how long it is.
+  function ed_add_import(line) {
+    const text = ed.ta.value;
+    const lines = text.split("\n");
+    let at = -1;
+    lines.forEach((l, i) => {
+      if (/^import\s/.test(l)) {
+        at = i;
+      }
+    });
+    const from = at < 0 ? 0 : text_offset(text, at + 1, 1) + lines[at].length + 1;
+    ed.ta.setSelectionRange(from, from);
+    ed_insert(line + "\n");
+    return { from, len: line.length + 1 };
   }
 
   // The type's head name, the file's own namespace stripped.
@@ -2674,23 +3211,27 @@
     return name;
   }
 
-  // The cases to write for a type, as [pattern, tag]; null when the type
-  // is not one to split on. A pair answers a single binding instead.
+  // The cases to write for a type, each { tag, make(taken) } where make
+  // writes the pattern with names not in taken (and adds them to it); null
+  // when the type is not one to split on. Each case is a scope of its own:
+  // a field keeps its name in every case, avoiding only the context's names
+  // and those of the other variables split in the same case. imp: an
+  // import the constructors need.
   function split_plan(ty, ctx, file) {
-    const taken = new Set(ctx.map(([k]) => k));
     const text = ty.trim();
+    const mk = (tag, f) => ({ tag, make: f });
     if (split_top(text.replace(/\s*&\s*/g, " & ")).length === 1 && / & /.test(text)) {
-      return { cases: [["Tuple{" + fresh_name("a", taken) + ", " + fresh_name("b", taken) + "}", "tuple"]] };
+      return { cases: [mk("tuple", (tk) => "Tuple{" + fresh_name("a", tk) + ", " + fresh_name("b", tk) + "}")], imp: null };
     }
     const head = type_head(text);
     if (head === "Nat") {
-      return { cases: [["0n", "zero"], ["1n+" + fresh_name("p", taken), "succ"]] };
+      return { cases: [mk("zero", () => "0n"), mk("succ", (tk) => "1n+" + fresh_name("p", tk))], imp: null };
     }
     if (head === "List") {
-      return { cases: [["[]", "nil"], [fresh_name("h", taken) + " <> " + fresh_name("t", taken), "cons"]] };
+      return { cases: [mk("nil", () => "[]"), mk("cons", (tk) => fresh_name("h", tk) + " <> " + fresh_name("t", tk))], imp: null };
     }
     if (head === "String") {
-      return { cases: [["SNil{}", "snil"], ["SCon{" + fresh_name("c", taken) + ", " + fresh_name("cs", taken) + "}", "scon"]] };
+      return { cases: [mk("snil", () => "SNil{}"), mk("scon", (tk) => "SCon{" + fresh_name("c", tk) + ", " + fresh_name("cs", tk) + "}")], imp: null };
     }
     if (head === "" || head === "Type" || head === "Data" || /^[a-z]/.test(head)) {
       return null;
@@ -2699,8 +3240,13 @@
     if (ctors.length === 0) {
       return null;
     }
-    return { cases: ctors.map((d) => [d.name + "{" + d.params.map((p) => fresh_name(param_name(p), taken)).join(", ") + "}",
-      d.name.slice(d.name.lastIndexOf(".") + 1).toLowerCase().replace(/[^a-z0-9]/g, "_")]) };
+    return { imp: ctors.imp, cases: ctors.map((d) => mk(d.name.slice(d.name.lastIndexOf(".") + 1).toLowerCase().replace(/[^a-z0-9]/g, "_"),
+      (tk) => d.name + "{" + d.params.map((p) => fresh_name(param_name(p), tk)).join(", ") + "}")) };
+  }
+
+  // The variables of a card's context that can be split.
+  function split_vars(c) {
+    return c.ctx.filter(([, ty]) => split_plan(ty, c.ctx, c.file) !== null).map(([k]) => k);
   }
 
   const SPLIT_CAP = 64;
@@ -2711,21 +3257,19 @@
       goals_paint();
       return;
     }
-    // each variable's cases, the pattern names kept apart from each other's
-    const ctx = c.ctx.slice();
+    // each variable's cases; the names are chosen per combination below
     const plans = [];
+    const imps = new Set();
     for (const v of vars) {
-      const ty = (ctx.find(([k]) => k === v) || [])[1];
-      const plan = ty === undefined ? null : split_plan(ty, ctx, c.file);
+      const ty = (c.ctx.find(([k]) => k === v) || [])[1];
+      const plan = ty === undefined ? null : split_plan(ty, c.ctx, c.file);
       if (plan === null) {
         goals_paint();
         return;
       }
       plans.push(plan.cases);
-      for (const [pat] of plan.cases) {
-        for (const m of pat.matchAll(/[A-Za-z_]\w*/g)) {
-          ctx.push([m[0], ""]);
-        }
+      if (plan.imp) {
+        imps.add(plan.imp);
       }
     }
     const count = plans.reduce((n, p) => n * p.length, 1);
@@ -2751,15 +3295,21 @@
     const ind = /^\s*/.exec(cur)[0];
     const out = [ind + "match " + vars.join(" ") + ":"];
     for (const combo of combos) {
-      out.push(ind + "  case " + combo.map(([pat]) => pat).join(" ") + ":");
-      out.push(ind + "    ?" + c.name + "_" + combo.map(([, tag]) => tag).join("_"));
+      const taken = new Set(c.ctx.map(([k]) => k));
+      out.push(ind + "  case " + combo.map((one) => one.make(taken)).join(" ") + ":");
+      out.push(ind + "    ?" + c.name + "_" + combo.map((one) => one.tag).join("_"));
     }
     const keep = work_snapshot();
     const from = text_offset(text, c.line, 1);
     ed.ta.focus({ preventScroll: true });
     ed.ta.setSelectionRange(from, from + cur.length);
     ed_insert(out.join("\n"));
-    const pos = text_offset(ed.ta.value, c.line + 2, 1) + ind.length + 4;
+    let shift = 0;
+    for (const line of imps) {
+      ed_add_import(line);
+      shift += 1;
+    }
+    const pos = text_offset(ed.ta.value, c.line + 2 + shift, 1) + ind.length + 4;
     ed.ta.setSelectionRange(pos, pos);
     ed_reveal();
     toast(t("split_done", vars.join(" ")), t("undo"), () => work_restore(keep));
@@ -4431,6 +4981,16 @@
       text: "⋯", onclick: file_sheet }));
     bar.append(el("button", { class: "file-add", type: "button", "aria-label": t("file_add_aria"),
       text: "+", onclick: () => name_sheet(null) }));
+    // the editor's own tools, at the bar's end: they keep the editor's focus
+    const keep = (b) => {
+      b.addEventListener("mousedown", (e) => e.preventDefault());
+      return b;
+    };
+    bar.append(el("span", { class: "file-tools" },
+      keep(el("button", { class: "file-more", type: "button", id: "btn-comment", "aria-label": t("comment_aria"), title: t("comment_aria") + " (Ctrl+/)",
+        text: "#", onclick: ed_comment })),
+      el("button", { class: "file-more", type: "button", id: "btn-find", "aria-label": t("find_aria"), title: t("find_aria") + " (Ctrl+F)",
+        text: "⌕", onclick: () => (find.on ? find_close(true) : find_open()) })));
     for (const m of hub_imports()) {
       const on = view.hub === m.rel;
       bar.append(el("button", { class: "file hub", type: "button", role: "tab", "aria-selected": String(on),
@@ -5130,17 +5690,37 @@
 
   let toast_now = null;
 
+  // Messages go to the status line at the foot of the page, in the layout,
+  // so they hide nothing: the latest one, bright for a few seconds, then
+  // dim; its action (Undo) stays within reach for 30 s.
   function toast(text, action, fn) {
+    const line = $("#status");
     if (toast_now !== null) {
       toast_now.remove();
     }
-    const t = el("div", { class: "toast", role: "status" }, el("span", { text }));
+    const msg = el("div", { class: "toast" }, el("span", { text }));
     if (action) {
-      t.append(el("button", { type: "button", text: action, onclick: () => { t.remove(); fn(); } }));
+      msg.append(el("button", { type: "button", text: action, onclick: () => { msg.remove(); fn(); } }));
     }
-    document.body.append(t);
-    toast_now = t;
-    setTimeout(() => t.remove(), action ? 7000 : 2200);
+    // a sheet open covers the foot of the page: there, the message floats
+    // above the sheet, briefly
+    if ($(".scrim") !== null) {
+      msg.classList.add("float");
+      document.body.append(msg);
+      toast_now = msg;
+      setTimeout(() => msg.remove(), action ? 7000 : 2500);
+      return;
+    }
+    line.append(msg);
+    toast_now = msg;
+    setTimeout(() => msg.classList.add("old"), action ? 6000 : 3000);
+    setTimeout(() => {
+      if (msg.querySelector("button") === null || toast_now !== msg) {
+        return;
+      }
+      msg.querySelector("button").remove();
+    }, 30000);
+    setTimeout(() => msg.remove(), action ? 45000 : 12000);
   }
 
   function examples_sheet() {
@@ -5519,6 +6099,9 @@
   // wrote stays as it was, and the next one speaks the new language.
   function lang_set(code) {
     lang = code;
+    if (find.on) {
+      find_close(false);
+    }
     store_main();
     lang_static();
     keys_init();
@@ -5529,6 +6112,7 @@
     run_button(run.busy);
     goals_paint();
     sig_update();
+    agent_paint();
     for (const b of $$("#out-targets .chip")) {
       b.textContent = out_label(b.dataset.target);
     }

@@ -195,7 +195,7 @@
       }
       return list;
     },
-    // io_run (2.0.37), awaiting where io_wait blocked: nothing here is ever
+    // io_run (2.0.39), awaiting where io_wait blocked: nothing here is ever
     // readable, so a wait is a deadline or a dead end. As there, a wait
     // that comes due fires even while computations keep the loop busy, an
     // effect is $0eff[op.$](...args, kont), and one that waits parks itself
@@ -259,7 +259,8 @@
           }
           var s = io.runs.shift();
           var op = s.fun(s.arg);
-          while (op !== undefined) {
+          // as there, 64 ready effects in a row make way for the others
+          for (var left = 64; op !== undefined; left -= 1) {
             if (op.$ === "Emit") {
               io.live -= 1;
               break;
@@ -282,6 +283,10 @@
             if (x === undefined) {
               break;
             }
+            if (left === 1) {
+              rt.push(op.kont, x, false);
+              break;
+            }
             op = op.kont(x);
           }
         }
@@ -296,6 +301,7 @@
         rt.errs("bend: runtime fail-stop");
         return 1;
       } finally {
+        io.done = true;
         rt.activate(undefined);
       }
     }

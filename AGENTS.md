@@ -6,7 +6,7 @@ is no server. This file records the design choices made so far, so that whoever
 works on the page next keeps them, or changes them on purpose.
 
 - Shipped as one standalone file, `bend-workshop.html` (= `dist/index.html`)
-- Tracks the latest Bend: currently 2.0.37, commit e5527d5 of bendlang/bend
+- Tracks the latest Bend: currently 2.0.39, commit d30d7dd of bendlang/bend
 - Owner's priorities: proof work on a phone, staying current with Bend, no
   surprises (privacy, lost work, silent failures)
 
@@ -29,8 +29,8 @@ These shape every feature. Break one only with a reason written down here.
    a card. The key bar has the symbols phone keyboards hide, and a game pad
    appears for windows.
 4. **The checker is the judge.** Every edit the page makes on its own is
-   checked before it is written or offered: Split, Lemma, Constructors/Solve,
-   law⇄def, operators⇄calls, `#goal:` marks. A candidate that does not type is shown greyed with
+   checked before it is written or offered: Split, Lemma, Rewrite,
+   Constructors/Solve, law⇄def, operators⇄calls, `#goal:` marks. A candidate that does not type is shown greyed with
    the checker's reason, never hidden without a word. Every write of the agent
    is checked right after it lands, and the verdict goes back to the agent;
    only the checker's verdict says a proof is done.
@@ -42,7 +42,7 @@ These shape every feature. Break one only with a reason written down here.
    the error excerpt with its caret, and the reading of imports and quantities
    follow `main.ts` and `bend.ts`. When the CLI changes, the page follows.
 7. **Nothing is lost.** Every page-made edit goes through the browser's undo
-   stack and ends in a toast with *Undo*. Destructive steps take a snapshot
+   stack and ends in a message with *Undo* in the status line. Destructive steps take a snapshot
    first. Opening an example never overwrites work.
 8. **No telemetry.** The only request the page makes by itself is Google Fonts,
    and Settings turns it off. Anything else is user-triggered: a hub import,
@@ -159,12 +159,13 @@ Settings arguments, after the program name.
 **Windows.** The official JS IO loop never yields, so a worker running it
 cannot hear the page. A program that opens a `Window` therefore gets
 `runner-tail.js`: an async copy of `io_run` that yields between frames, and its
-own `Window.open/frame/set_title/close`. It follows `io_run` as of 2.0.37:
+own `Window.open/frame/set_title/close`. It follows `io_run` as of 2.0.39:
 an effect is a plain function in `$0eff`, called as
 `$0eff[op.$](...args, kont)`; one that waits parks itself with `io_park_on`
 and answers `undefined`, and a due wait calls its `more()` and resumes `k`
-with what it answers; `Exit` and `Halt` end the loop, a code past 255 as an
-error. `io_push` and `io_park_on` work on the runtime's `io_active`, which
+with what it answers; 64 ready effects in a row make way for the other
+computations; `Exit` and `Halt` end the loop, a code past 255 as an
+error; the scheduler is marked done when it ends. `io_push` and `io_park_on` work on the runtime's `io_active`, which
 the tail, being in the program's scope, sets for the copy. Like `io_run`,
 the copy fires a due timer even while computations keep the loop busy (it
 looks at its waits, kept in deadline order, at each yield). Frames are quadtrees rasterized as
@@ -187,6 +188,12 @@ cooperatively and Stop is a flag read each frame.
 
 ## Checking (entry.ts)
 
+- **Errors first.** In the Output pane an error comes before the goals, so
+  it is not lost under them.
+- **Copies.** An error `x (consumed more than once)` on a def's parameter
+  offers *Copy x*: the body opens with `match x:` / `case +x:` (the body
+  shifted under it), or, when it already opens with such a copying match,
+  `x` joins it (`match a x:` / `case +a +x:`) rather than a new layer.
 - **Every goal.** The checker stops at the first `?name`. `run` swaps the hole
   for `?TODO` and checks again until done. Columns are mapped back to the
   user's text (`col_back`), and so is the excerpt with its caret. Past 48 goals
@@ -245,6 +252,18 @@ targets, all pure TypeScript, so all within the page's reach:
   reload gives them back; a hub tab's for the visit only). A click on a tab
   ends by collapsing the selection of an editor that had the focus, so the
   caret is put back again on the next frame.
+- **Comments.** `#` at the end of the files bar (and Ctrl+/) comments the
+  lines the selection touches out, `# ` at their least indentation, or back
+  in when they all are comments; through `execCommand`, so undo works.
+- **Find.** ⌕ (and Ctrl+F in the editor) opens a bar over the editor: the
+  text, any case, marked in the open file on the marks layer (the current
+  one brighter), with its count; Enter and Shift+Enter go on and back,
+  Escape closes. The other files holding it are chips under the bar. The
+  typing stays in the bar, so a phone keyboard never types into the code.
+- **Status line.** The page's messages (*Undo* included) are a line under
+  the editor, not a bubble over it: bright while new, dimmed after a few
+  seconds, gone later; a message's button stays 30 s. Over an open sheet,
+  where the line is hidden, a message floats for a few seconds.
 - **Live check.** The live check runs 380 ms after typing stops. A
   `PROOF.bend` in the workspace is checked too, which drives the "laws" badge.
 - **Declarations come from the text, not the checker** (`decl_scan`), so
@@ -277,8 +296,13 @@ type), the goal after `⊢`, and a toolbar.
   first. Otherwise the button is dashed (`Constructors…`) and tries on a tap.
 - **Split.** Tick variables, then *Match*: one `match a b:` over the product of
   their constructors (`Nat`/`List`/`String` sugar, a pair as `Tuple{a, b}`),
-  with a named hole per case. It needs the hole alone on its line and at most
-  64 cases. When it does not apply the button is dimmed, and a tap says why.
+  with a named hole per case. With one variable to split, it splits at once.
+  Pattern variables take the constructor's field names, renamed only against
+  the context, since each case is a scope of its own. A type the file reaches
+  only through another module prints as `shapes.Shape`; its constructors need
+  an import, which Split (and Constructors) add (`import ./shapes.bend as
+  Shapes`). It needs the hole alone on its line and at most 64 cases. When it
+  does not apply the button is dimmed, and a tap says why.
 - **Lemma.** Tick variables, name the lemma, *Extract*. The variables the goal
   names, and those named by the types of ticked ones, are locked in. Parameters
   keep their quantity (`-x`, `+n`). The lemma goes above the enclosing
@@ -286,7 +310,19 @@ type), the goal after `⊢`, and a toolbar.
   what is above it. Its header is laid out like the demos'; if that misreads,
   it falls back to one line. The hole becomes the call. The result is checked
   before anything is written. The lemma's hole keeps the original hole's name,
-  so the card follows it.
+  so the card follows it. A template parameter `~f` of the enclosing def,
+  which goals print as `def~f`, becomes the lemma's own first parameter,
+  typed as the def's header types it, and the call passes `~f`.
+- **Rewrite** (an equality goal, the hole alone on its line). Type an
+  equality `e` (a hypothesis, a lemma's call; the context's equalities are
+  chips), *Find*: its type `{a == b : T}` comes from the checker (a copy
+  where the hole is `__eq = e` then the hole), then each place of the goal
+  where `b` stands gives `%e : P` (`P` the goal with `_` there) and each place
+  of `a` gives `%Equal.sym(T, a, b, e) : P`. Each is checked first and shown
+  with the goal it leaves, greyed with the checker's reason when it fails;
+  one that leaves both sides equal is marked `{==}` and, tapped, written with
+  `{==}` in place of the hole. This replaces the `#goal:` → hand-written `%`
+  → `_` loop.
 - **AI.** See *Assistant* below.
 - **Law ⇄ def** (from a signature's sheet). It splits a typed def into
   `law` + an untyped `def`, with the claim laid out, or merges them back. It is
@@ -365,7 +401,7 @@ type), the goal after `⊢`, and a toolbar.
     imports) is checked before and after; nothing is written if one checks
     worse, and the sheet shows what the checker said. A snapshot first, then
     the open file goes through the editor's undo stack, the other files are
-    written directly, and the toast's *Undo* restores the snapshot.
+    written directly, and the message's *Undo* restores the snapshot.
 
 ## Storage (localStorage, per browser)
 
@@ -438,7 +474,8 @@ type), the goal after `⊢`, and a toolbar.
   or from an error ("Agent: fix it"). The tab shows only when a profile can
   call tools: Claude where `sample.limits()` reports `tools`, Anthropic,
   OpenAI, or an OpenAI-shaped server with a tool-calling model.
-- **Tools.** `list_files`, `read_file` (project files and `hub:` modules),
+- **Tools.** `list_files`, `read_file` (project files, `Base` as if it were a
+  file, and `hub:` modules),
   `list_symbols` (what a project file, a hub module or Base declares: name,
   kind, line, and for a constructor its type; Base past 300 symbols answers
   with its namespaces and asks for a prefix), `signature` (a name's type alone,
@@ -457,7 +494,9 @@ type), the goal after `⊢`, and a toolbar.
   end the session.
 - **Locks.** Each file can be locked in the tab (kept with the project): the
   agent reads it and cannot write it. Base and hub modules are always
-  read-only.
+  read-only. What the agent may change (locks, holes) is written in a
+  `<rights>` section late in the prompt, after the files, so that changing
+  it leaves the cached head as it was.
 - **Hole sessions.** Started on chosen holes, the session gets no `edit_file`
   or `create_file`: `fill_hole` is its only way to write, the page places the
   code at the hole's indentation itself, and only the session's holes are
@@ -491,7 +530,8 @@ type), the goal after `⊢`, and a toolbar.
   IndexedDB (database `bend-workshop`, store `chats`, by project id);
   without it, for the page's life. The Agent tab's *Memory* view shows the
   view line by line, each opening down to its messages, and *Forget* clears
-  it, with Undo.
+  it, with Undo. While a batch of summaries is written, the tab shows a bar
+  of how far the view has shrunk toward half its budget.
 - **Loops.** With Claude in the viewer, a call allows a handful of tool rounds
   and 256 KiB of text. A session is therefore a chain of calls, each from a
   fresh prompt: the rules, two sections of the guide (Syntax Reference,
@@ -526,7 +566,7 @@ type), the goal after `⊢`, and a toolbar.
   interface's language). *Copy, and open UniiChat* copies it and opens the
   site (user-triggered). Its answer, pasted back, gives the files to take
   back (new ones marked); taking them back takes a snapshot first, ends in a
-  toast with Undo, and leaves a note in the memory.
+  message with Undo, and leaves a note in the memory.
 - **Control.** Tool calls run one at a time, even when a round asks for
   several. Before the first, a snapshot is taken ("before the agent") and the
   editor turns read-only; the page's own edits (key bar, Split, Lemma, file
@@ -608,8 +648,8 @@ type), the goal after `⊢`, and a toolbar.
 - **The assistant and the agent** are asked to answer in the interface's
   language (`LANG_NAMES`). Compiler messages, the guide and example code stay
   in English.
-- **Switching.** `lang_set` redraws what is on screen without reloading; what a
-  run already printed stays as it was.
+- **Switching.** `lang_set` redraws what is on screen without reloading (the
+  Agent tab included); what a run already printed stays as it was.
 - **Snapshots.** Their labels are stored as keys, so history reads in any
   language.
 - **Adding a language.** A block in `src/i18n.js` with every key of `en`, a
@@ -645,8 +685,9 @@ type), the goal after `⊢`, and a toolbar.
   `window_mobile`, `window_iframe_csp`, `window_no_worker`,
   `window_page_mode_mobile`, `timers_busy` (Bend's `within_busy` through both
   loops), `window_text` (typed text as `Text` events, worker and page). Proof tools: `goals_signatures`, `kept_goals_tooltip`, `long_goals`,
-  `split`, `split_narrow`, `split_disabled`, `constructors`, `solve_lazy`,
-  `lemma`, `lemma_mobile`, `lemma_pong`, `lawdef_pong`, `operators`, `opcalls`,
+  `split`, `split_narrow`, `split_disabled`, `split_imported` (an import
+  added), `constructors`, `solve_lazy`, `lemma`, `lemma_mobile`, `lemma_pong`,
+  `lemma_template` (`~f`), `rewrite`, `copy_match`, `find_comment`, `lawdef_pong`, `operators`, `opcalls`,
   `sigs_marks_lawdef_ai`, `refactors` (caret per file across a reload, an
   imported type's constructors, rename, move, a cycle refused). Outputs: `verdict_bendtt`, `compiler_outputs`,
   `heavy_demos`. Hub: `hub` (a fake package with real hashes, from
@@ -693,7 +734,9 @@ type), the goal after `⊢`, and a toolbar.
    rewritten (effects as plain functions that park themselves, no
    `io_wake`, `io_active`), and windows got a `Text` event: the async copy
    and the tail followed. A `Nat` now crosses to JS as a plain number; the
-   page passes none.
+   page passes none. In 2.0.37 → 2.0.39 the loop yields after 64 ready
+   effects and marks its scheduler done; waits default to an `at` of
+   Infinity. The copy followed.
 4. Update the examples if Base or the syntax moved, then write the new full
    hash in `BEND_COMMIT` and push: the workflow publishes.
 
