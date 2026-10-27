@@ -271,7 +271,10 @@ Name a minor item in a word or two rather than drop it. Copy names, numbers, pat
   // In IndexedDB, beside the past sessions (store chats, by project id);
   // without it, for the page's life only.
 
-  const mem_store = { cache: new Map(), timer: 0 };
+  // A memory that could not be read (the database out of reach for a
+  // moment) is "loose": it never overwrites a stored one, which would lose
+  // it; it is written only where nothing is stored yet.
+  const mem_store = { cache: new Map(), timers: new Map() };
 
   async function mem_open(pid) {
     if (mem_store.cache.has(pid)) {
@@ -279,21 +282,42 @@ Name a minor item in a word or two rather than drop it. Copy names, numbers, pat
     }
     const rec = await ses_req("readonly", (st) => st.get(pid), "chats");
     const m = rec && Array.isArray(rec.msgs) ? { msgs: rec.msgs, nodes: rec.nodes || {}, view: rec.view || [], made: rec.made || 0 } : mem_new();
+    if (rec === null) {
+      m.loose = true;
+    }
     mem_store.cache.set(pid, m);
     return m;
   }
 
   function mem_save(pid) {
-    clearTimeout(mem_store.timer);
-    mem_store.timer = setTimeout(() => mem_flush(pid), 300);
+    clearTimeout(mem_store.timers.get(pid));
+    mem_store.timers.set(pid, setTimeout(() => mem_flush(pid), 300));
   }
 
   async function mem_flush(pid) {
+    clearTimeout(mem_store.timers.get(pid));
+    mem_store.timers.delete(pid);
     const m = mem_store.cache.get(pid);
-    if (m) {
-      await ses_req("readwrite", (st) => st.put({ id: pid, msgs: m.msgs, nodes: m.nodes, view: m.view, made: m.made }), "chats");
+    if (!m) {
+      return;
     }
+    if (m.loose) {
+      const rec = await ses_req("readonly", (st) => st.get(pid), "chats");
+      if (rec !== undefined) {
+        // stored already, or still out of reach: keep it as it is
+        return;
+      }
+      m.loose = false;
+    }
+    await ses_req("readwrite", (st) => st.put({ id: pid, msgs: m.msgs, nodes: m.nodes, view: m.view, made: m.made }), "chats");
   }
+
+  // What waits to be written goes before the page does.
+  addEventListener("pagehide", () => {
+    for (const pid of [...mem_store.timers.keys()]) {
+      mem_flush(pid);
+    }
+  });
 
   async function mem_forget(pid) {
     mem_store.cache.set(pid, mem_new());

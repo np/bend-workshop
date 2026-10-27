@@ -99,8 +99,19 @@ if (/<\/script/i.test(prelude)) throw new Error("prelude holds a closing script 
 const examples = read("gen/examples.json").replace(/</g, "\\u003c");
 const guide = markdown(read("../bend/guide/GUIDE.md"));
 
+// The fonts, inlined (third_party/fonts, SIL Open Font License): the page
+// asks nothing of any server for them. Latin subsets, the weights as one
+// variable file per style; named apart from the originals, being subsets.
+const font = (family, file, style, weights) => "@font-face { font-family: \"" + family + "\"; font-style: " + style
+  + "; font-weight: " + weights + "; font-display: swap; src: url(data:font/woff2;base64,"
+  + fs.readFileSync("third_party/fonts/" + file).toString("base64") + ") format(\"woff2\"); }\n";
+const fonts = font("Workshop Mono", "JetBrainsMono-latin.woff2", "normal", "400 700")
+  + font("Workshop Mono", "JetBrainsMono-Italic-latin.woff2", "italic", "400 700")
+  + font("Workshop Serif", "SourceSerif4-latin.woff2", "normal", "400 600")
+  + font("Workshop Serif", "SourceSerif4-Italic-latin.woff2", "italic", "400 600");
+
 const cfx = zlib.deflateRawSync(Buffer.from(read("gen/c_effects.json")), { level: 9 }).toString("base64");
-const fill = { STYLE: read("src/style.css"), GUIDE: guide, EXAMPLES: examples, PRELUDE: prelude, CEFFS: cfx,
+const fill = { STYLE: fonts + read("src/style.css"), GUIDE: guide, EXAMPLES: examples, PRELUDE: prelude, CEFFS: cfx,
   I18N: read("src/i18n.js"), GUIDEMD: read("../bend/guide/GUIDE.md").replace(/<\/script/gi, "<\\/script"),
   RUNTAIL: read("src/runner-tail.js"),
   CORE: core, APP: read("src/app.js").replace("/*__OPCALL__*/", () => read("src/opcall.js"))

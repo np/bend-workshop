@@ -2,7 +2,7 @@ import fs from "node:fs";
 const app = fs.readFileSync("src/app.js", "utf8") + "\n" + fs.readFileSync("src/opcall.js", "utf8");
 const grab = (name) => { const a = app.indexOf("  function " + name + "("); if (a < 0) throw new Error(name); return app.slice(a, app.indexOf("\n  }\n", a) + 4); };
 const INFIX = JSON.parse(/INFIX[^=]*= (\{.*?\});/.exec(fs.readFileSync("gen/assets.ts", "utf8"))[1]);
-const names = ["split_top", "close_of", "top_split", "angle_args", "call_at", "op_back", "op_tokens", "op_tree", "op_atom", "op_calls",
+const names = ["split_top", "close_of", "top_split", "angle_args", "call_at", "op_back", "op_here", "op_annot", "op_tokens", "op_tree", "op_atom", "op_calls",
   "call_tree", "op_with_ns", "op_spaces", "op_infix", "op_group", "op_scope", "op_slot", "call_span", "call_outer", "opcall_plan"];
 const src = "const Core = { INFIX: " + JSON.stringify(INFIX) + " };\nconst OP_WALKED = new Set(['Bool.and', 'Bool.or', 'String.append']);\n"
   + names.map(grab).join("\n") + "\nreturn { opcall_plan };";
@@ -43,6 +43,22 @@ for (const [text, needle, k] of cases) {
   if (back !== "" && back !== text && back !== text.replace(": Vec<n>)", ": Vec)")) {
     bad += 1;
     console.log("   ^ the round trip changed the text");
+  }
+}
+// glued operators and annotation, read as Bend reads them: each operator of
+// the group, whatever the spaces, gives the same calls
+for (const [text, needle, want] of [
+  ["  c = (a + b * c:Nat)", "*", "  c = Nat.add(a, Nat.mul(b, c))"],
+  ["  c = (a + b * c:Nat)", "+", "  c = Nat.add(a, Nat.mul(b, c))"],
+  ["  c = (a+1n*2n:Nat)", "*", "  c = Nat.add(a, Nat.mul(1n, 2n))"],
+  ["  c = (x - y : U32)", "-", "  c = U32.sub(x, y)"],
+]) {
+  const plan = opcall_plan(text, { op: needle, a: text.indexOf(needle) });
+  const out = plan && !plan.error ? apply(text, plan) : String(plan && plan.error);
+  console.log(text.trim().padEnd(34), "→", out.trim());
+  if (out !== want) {
+    bad += 1;
+    console.log("   ^ expected", want.trim());
   }
 }
 // from calls, the caret inside a nested call

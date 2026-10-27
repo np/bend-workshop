@@ -25,8 +25,8 @@
   --t-op:  #51607D;
   --t-def: #1B2233;
 
-  --mono: "JetBrains Mono", ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
-  --serif: "Source Serif 4", "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+  --mono: "Workshop Mono", "JetBrains Mono", ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --serif: "Workshop Serif", "Source Serif 4", "Iowan Old Style", "Palatino Linotype", Georgia, serif;
 
   --code-size: 14px;
   --code-lh: 22px;
@@ -1501,3 +1501,21 @@ button.goal-name { text-decoration: underline; text-underline-offset: 3px; }
 .ag-mem.run { font-style: italic; }
 .cv-to-j { font: inherit; font-size: 11px; color: var(--cobalt); padding: 0 4px; }
 .ai-instr textarea { width: 100%; box-sizing: border-box; }
+
+/* History: a snapshot's actions, and the diff between two versions */
+.snap { flex-wrap: wrap; }
+.snap-acts { display: flex; gap: 4px; flex: none; margin-left: auto; }
+.diffs { display: grid; gap: 8px; min-width: 0; }
+.diff-file > summary { cursor: pointer; font: 600 12.5px var(--mono); padding: 4px 0; }
+.diff { margin: 0; font: 12px/1.45 var(--mono); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 4px 0; overflow-x: auto; }
+.diff > div { padding: 0 8px; white-space: pre; }
+.diff .add { background: var(--proof-bg); }
+.diff .del { background: var(--fail-bg); }
+.diff .ctx { color: var(--muted); }
+.diff .hunk { color: var(--cobalt); background: var(--sunken); }
+
+/* Settings, fonts off: the system's own */
+:root.sysfonts {
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --serif: "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+}

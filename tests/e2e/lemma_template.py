@@ -40,5 +40,7 @@ with sync_playwright() as p:
     head = [l for l in text.split("\n") if l.startswith("def step")]
     check("1 lemma:", head, len(head) == 1 and head[0].startswith("def step(~f: Nat -> Nat, rest: List<&1, Nat>)"), "map(~f, rest)" in text,
           "map_len~f" not in text, "      step(~f, rest)" in text, page.inner_text("#verdict-text")[:12])
+    page.evaluate("document.querySelector('#ed-ta').focus()"); page.keyboard.press("Control+z"); time.sleep(0.3)
+    check("2 Ctrl+Z takes the lemma back:", page.eval_on_selector("#ed-ta", "t => t.value") == CODE)
     for e in errs: print("!!", e[:200])
     b.close()

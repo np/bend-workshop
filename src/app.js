@@ -1792,7 +1792,13 @@
     if (end < at) {
       return null;
     }
-    return { name: m[1], file, top, end };
+    // the def's parameters, in order, so a copy joins them in that order
+    const head = lines.slice(top, end + 1).join("\n");
+    const open = head.indexOf("(");
+    const shut = open < 0 ? -1 : close_of(head, open);
+    const params = shut < 0 ? [] : split_top(head.slice(open + 1, shut))
+      .map((x) => (/^\s*[-+~]?([A-Za-z_]\w*)\s*:/.exec(x) || [])[1]).filter(Boolean);
+    return { name: m[1], file, top, end, params };
   }
 
   // The body of the def, with name copied: in the copying match that opens
@@ -1831,8 +1837,17 @@
       if (names.includes(dup.name)) {
         return null;
       }
-      lines[first] = pad + "match " + names.concat(dup.name).join(" ") + ":";
-      lines[next] = /^\s*/.exec(lines[next])[0] + "case " + pats.concat(dup.name).map((x) => "+" + x).join(" ") + ":";
+      // in the parameters' order: the new one before the first that
+      // comes after it, else last
+      const rank = (x) => {
+        const k = (dup.params || []).indexOf(x);
+        return k < 0 ? Infinity : k;
+      };
+      const k = names.findIndex((x) => rank(x) > rank(dup.name));
+      const all = names.slice();
+      all.splice(k < 0 ? all.length : k, 0, dup.name);
+      lines[first] = pad + "match " + all.join(" ") + ":";
+      lines[next] = /^\s*/.exec(lines[next])[0] + "case " + all.map((x) => "+" + x).join(" ") + ":";
       return { text: lines.join("\n"), line: next + 1 };
     }
     const body = lines.slice(first, last + 1).map((l) => (l.trim() === "" ? l : "    " + l));
@@ -3435,11 +3450,16 @@
     if (b === a) {
       return null;
     }
-    const op = text.slice(a, b);
-    if (!Core.INFIX[op] || !Core.INFIX[op][2] || (a > 0 && !/\s/.test(text[a - 1])) || (b < text.length && !/\s/.test(text[b]))) {
+    // the longest operator from a, read as Bend reads it, after a term
+    let op = text.slice(a, Math.min(b, a + 3));
+    while (op !== "" && Core.INFIX[op] === undefined) {
+      op = op.slice(0, -1);
+    }
+    const before = text.slice(0, a).replace(/[ \t]+$/, "");
+    if (op === "" || !Core.INFIX[op][2] || !/[\w)\]}'"]$/.test(before) || !op_here(text, a, op)) {
       return null;
     }
-    return { op, a, b };
+    return { op, a, b: a + op.length };
   }
 
   // The type of the annotation (.. : T) the operator at a sits in.
@@ -3458,8 +3478,16 @@
         if (shut < 0) {
           return null;
         }
-        const parts = top_split(text.slice(i + 1, shut), " : ");
-        return parts.length > 1 ? parts[parts.length - 1].trim() : null;
+        const inner = text.slice(i + 1, shut);
+        const an = op_annot(inner);
+        if (an !== null) {
+          return an.ty;
+        }
+        // plain parentheses belong to the walk: the annotation may be
+        // further out; a call's arguments do not
+        if (/[\w.]/.test(text[i - 1] || "") || split_top(inner).length !== 1) {
+          return null;
+        }
       }
     }
     return null;
@@ -4094,23 +4122,32 @@
     if (agent_guard()) {
       return;
     }
+    // one replacement of what differs (between the common head and tail),
+    // through execCommand: a single step of the browser's undo stack,
+    // whether lines change, come or go
     const was = ed.ta.value;
-    const a = was.split("\n");
-    const b = next.split("\n");
-    const { line, col } = ed_caret();
+    const at = ed.ta.selectionEnd;
     const focus = document.activeElement === ed.ta;
-    for (let i = a.length - 1; i >= 0; i--) {
-      if (i < b.length && a[i] !== b[i]) {
-        const from = text_offset(was, i + 1, 1);
-        ed.ta.setSelectionRange(from, from + a[i].length);
-        ed_insert(b[i]);
-      }
+    let p = 0;
+    const most = Math.min(was.length, next.length);
+    while (p < most && was[p] === next[p]) {
+      p++;
     }
+    let q = 0;
+    while (q < most - p && was[was.length - 1 - q] === next[next.length - 1 - q]) {
+      q++;
+    }
+    if (p === was.length && p === next.length) {
+      return;
+    }
+    ed.ta.setSelectionRange(p, was.length - q);
+    ed_insert(next.slice(p, next.length - q));
     if (ed.ta.value !== next) {
       ed.ta.value = next;
       ed.ta.dispatchEvent(new Event("input", { bubbles: true }));
     }
-    const pos = text_offset(ed.ta.value, line, col + 1);
+    // the caret keeps its place in the text around the change
+    const pos = at <= p ? at : at >= was.length - q ? at + next.length - was.length : next.length - q;
     ed.ta.setSelectionRange(pos, pos);
     if (!focus) {
       ed.ta.blur();
@@ -5207,6 +5244,9 @@
   }
 
   function proj_switch(id) {
+    if (agent_guard()) {
+      return;
+    }
     const i = store.others.findIndex((p) => p.id === id);
     if (i < 0) {
       return;
@@ -5218,11 +5258,18 @@
     work_show();
   }
 
-  function proj_new(want, files, scratch, label) {
+  // While the agent works, the project stays: it writes to the files on
+  // state, so nothing may open another (a guide snippet, an example, an
+  // import).
+  function proj_new(want, files, scratch, label, id) {
+    if (agent_guard()) {
+      return;
+    }
     const before = proj_pack();
     const parked = proj_park();
     const name = proj_name_free(want);
-    proj_unpack({ id: proj_id(), name, scratch, active: 0, args: "",
+    const taken = id && (id === before.id || store.others.some((p) => p.id === id));
+    proj_unpack({ id: id && !taken ? id : proj_id(), name, scratch, active: 0, args: "",
       files: files.map((f) => ({ name: f.name, text: f.text })) });
     store_flush();
     work_show();
@@ -5375,7 +5422,7 @@
       const local = v.getUint32(at + 42, true);
       const name = dec.decode(new Uint8Array(buf, at + 46, nlen));
       at += 46 + nlen + xlen + clen;
-      const memo = !all && /(^|\/)\.workshop\/agent-memory\.json$/.test(name);
+      const memo = !all && /(^|\/)\.workshop\/(agent-memory|project)\.json$/.test(name);
       if (name.endsWith("/") || name.startsWith("__MACOSX/") || (csize > 4e6 && !memo)
         || (all ? /\.(png|jpe?g|gif|zip|gz|wasm|bin|o|a|so|dylib|exe)$/i.test(name) : !/\.(bend|js)$/.test(name) && !memo)) {
         continue;
@@ -5399,10 +5446,19 @@
     }
     const mi = out.findIndex((f) => /(^|\/)\.workshop\/agent-memory\.json$/.test(f.name));
     const memory = mi < 0 ? null : out.splice(mi, 1)[0].text;
+    const pi = out.findIndex((f) => /(^|\/)\.workshop\/project\.json$/.test(f.name));
+    let meta = null;
+    if (pi >= 0) {
+      try {
+        meta = JSON.parse(out.splice(pi, 1)[0].text);
+      } catch (e) {
+        meta = null;
+      }
+    }
     // a single top folder is the project's own: its files are the project
     const top = out.length > 0 && out.every((f) => f.name.includes("/")) ? out[0].name.split("/")[0] + "/" : "";
     const flat = top !== "" && out.every((f) => f.name.startsWith(top));
-    return { folder: flat ? top.slice(0, -1) : "", memory,
+    return { folder: flat ? top.slice(0, -1) : "", memory, meta,
       files: out.map((f) => ({ name: flat ? f.name.slice(top.length) : f.name, text: f.text })) };
   }
 
@@ -5437,7 +5493,16 @@
   // The agent's memory goes along when asked (and not empty): in the zip as
   // .workshop/agent-memory.json, a hidden folder bend never reads; in the
   // .json as its memory field. Import gives it to the new project.
+  // The project's id goes along too (.workshop/project.json; id in the
+  // .json): imported back, the files become a new version of that project
+  // rather than a project of their own.
   const MEM_ZIP = ".workshop/agent-memory.json";
+  const META_ZIP = ".workshop/project.json";
+
+  function proj_meta(at) {
+    return { name: META_ZIP, text: JSON.stringify({ format: "bend-workshop/project/1", id: state.id, name: state.name,
+      saved: new Date(at || Date.now()).toISOString() }) };
+  }
 
   async function proj_export(fmt, with_mem) {
     const stem = file_stem(state.name);
@@ -5445,10 +5510,25 @@
     const memo = m && m.msgs.length ? { format: "bend-workshop/memory/1", msgs: m.msgs, nodes: m.nodes, view: m.view, made: m.made } : null;
     try {
       if (fmt === "json") {
-        await save_file(stem + ".json", JSON.stringify({ bend_project: 1, name: state.name, files: state.files, memory: memo || undefined }, null, 1));
+        await save_file(stem + ".json", JSON.stringify({ bend_project: 1, id: state.id, name: state.name, files: state.files,
+          memory: memo || undefined }, null, 1));
       } else {
-        await save_file(stem + ".zip", zip_make(memo ? state.files.concat([{ name: MEM_ZIP, text: JSON.stringify(memo) }]) : state.files, stem));
+        const extra = [proj_meta()].concat(memo ? [{ name: MEM_ZIP, text: JSON.stringify(memo) }] : []);
+        await save_file(stem + ".zip", zip_make(state.files.concat(extra), stem));
       }
+    } catch (e) {
+      toast(save_error(e));
+    }
+  }
+
+  // One snapshot of the history, as a zip of its own (with the project's
+  // id, so that it comes back as a version of this project).
+  async function snap_export(snap) {
+    const d = new Date(snap.at);
+    const pad = (n) => String(n).padStart(2, "0");
+    const stem = file_stem(state.name) + "-" + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + "-" + pad(d.getHours()) + pad(d.getMinutes());
+    try {
+      await save_file(stem + ".zip", zip_make(snap.files.map(([name, text]) => ({ name, text })).concat([proj_meta(snap.at)]), stem));
     } catch (e) {
       toast(save_error(e));
     }
@@ -5466,11 +5546,15 @@
   }
 
   async function proj_import(list) {
+    if (agent_guard()) {
+      return;
+    }
     let took = 0;
     let hub_added = 0;
     let files = [];
     let want = "";
     let memo = null;
+    let pid = null;
     const mem_take = (x) => {
       try {
         const m = typeof x === "string" ? JSON.parse(x) : x;
@@ -5495,6 +5579,10 @@
           if (got.memory) {
             mem_take(got.memory);
           }
+          if (got.meta && typeof got.meta.id === "string" && list.length === 1) {
+            pid = got.meta.id;
+            want = got.meta.name || "";
+          }
           want = want || got.folder || file.name.replace(/\.zip$/i, "");
         } else if (/\.json$/i.test(file.name)) {
           const got = JSON.parse(await file.text());
@@ -5503,6 +5591,9 @@
           }
           files = files.concat(got.files);
           want = want || got.name || "";
+          if (typeof got.id === "string" && list.length === 1) {
+            pid = got.id;
+          }
           if (got.memory) {
             mem_take(got.memory);
           }
@@ -5527,11 +5618,50 @@
       return;
     }
     files.sort((x, y) => Number(y.name === "main.bend") - Number(x.name === "main.bend"));
-    proj_new(want || t("import_name"), files, false);
+    // a project of this browser comes back as a new version of itself
+    if (pid !== null && (pid === state.id || store.others.some((p) => p.id === pid))) {
+      if (pid !== state.id) {
+        proj_switch(pid);
+      }
+      await proj_version(files, memo);
+      return;
+    }
+    proj_new(want || t("import_name"), files, false, undefined, pid);
     if (memo) {
       mem_store.cache.set(state.id, memo);
       mem_flush(state.id);
     }
+  }
+
+  // Files imported for the open project: a snapshot before, the files in
+  // place, a snapshot after, and Undo. The memory imported replaces this
+  // one only when it holds more.
+  async function proj_version(files, memo) {
+    const same = JSON.stringify(files.map((f) => [f.name, f.text]).sort()) === JSON.stringify(snap_files().sort());
+    if (memo) {
+      const m = await mem_open(state.id);
+      if (memo.msgs.length > m.msgs.length) {
+        mem_store.cache.set(state.id, memo);
+        mem_flush(state.id);
+      }
+    }
+    if (same) {
+      toast(t("import_same", state.name));
+      return;
+    }
+    const keep = work_snapshot();
+    snap_take("snap_before_import", true);
+    const open = state.files[state.active] ? state.files[state.active].name : "";
+    state.files = files.map((f) => ({ name: f.name, text: f.text }));
+    state.active = Math.max(0, state.files.findIndex((f) => f.name === open));
+    proj_touch();
+    store_flush();
+    work_show();
+    snap_take("snap_imported", true);
+    toast(t("import_version", state.name), t("undo"), () => {
+      work_restore(keep);
+      store_flush();
+    });
   }
 
   function when(ms) {
@@ -5578,6 +5708,138 @@
     return more + less === 0 ? t("current_state") : t("lines_delta", less, more);
   }
 
+  // Diffs
+  // -----
+  // Two versions of the project (snapshots, or the code as it stands),
+  // file by file: the lines that differ, with three lines around, as a
+  // longest common subsequence finds them (past 4 million cells, a block
+  // replaced between the common head and tail).
+
+  function diff_lines(a, b) {
+    const x = a.split("\n");
+    const y = b.split("\n");
+    let h = 0;
+    while (h < x.length && h < y.length && x[h] === y[h]) {
+      h++;
+    }
+    let tl = 0;
+    while (tl < x.length - h && tl < y.length - h && x[x.length - 1 - tl] === y[y.length - 1 - tl]) {
+      tl++;
+    }
+    const xs = x.slice(h, x.length - tl);
+    const ys = y.slice(h, y.length - tl);
+    const ops = x.slice(0, h).map((l) => [" ", l]);
+    if (xs.length * ys.length > 4e6) {
+      ops.push(...xs.map((l) => ["-", l]), ...ys.map((l) => ["+", l]));
+    } else {
+      const n = xs.length;
+      const m = ys.length;
+      const w = m + 1;
+      const L = new Uint32Array((n + 1) * w);
+      for (let i = n - 1; i >= 0; i--) {
+        for (let j = m - 1; j >= 0; j--) {
+          L[i * w + j] = xs[i] === ys[j] ? L[(i + 1) * w + j + 1] + 1 : Math.max(L[(i + 1) * w + j], L[i * w + j + 1]);
+        }
+      }
+      let i = 0;
+      let j = 0;
+      while (i < n || j < m) {
+        if (i < n && j < m && xs[i] === ys[j]) {
+          ops.push([" ", xs[i]]);
+          i++;
+          j++;
+        } else if (j < m && (i === n || L[i * w + j + 1] > L[(i + 1) * w + j])) {
+          ops.push(["+", ys[j++]]);
+        } else {
+          ops.push(["-", xs[i++]]);
+        }
+      }
+    }
+    ops.push(...x.slice(x.length - tl).map((l) => [" ", l]));
+    return ops;
+  }
+
+  // The ops as hunks: changed lines with three of context, line numbers
+  // of both sides at each hunk's head.
+  function diff_view(ops) {
+    const box = el("pre", { class: "diff" });
+    const near = new Uint8Array(ops.length);
+    ops.forEach(([k], i) => {
+      if (k !== " ") {
+        for (let d = -3; d <= 3; d++) {
+          if (i + d >= 0 && i + d < ops.length) {
+            near[i + d] = 1;
+          }
+        }
+      }
+    });
+    let a = 1;
+    let b = 1;
+    let gap = true;
+    ops.forEach(([k, l], i) => {
+      if (near[i]) {
+        if (gap) {
+          box.append(el("div", { class: "hunk", text: "@@ −" + a + " +" + b + " @@" }));
+          gap = false;
+        }
+        box.append(el("div", { class: k === "+" ? "add" : k === "-" ? "del" : "ctx", text: k + " " + l }));
+      } else {
+        gap = true;
+      }
+      a += k === "+" ? 0 : 1;
+      b += k === "-" ? 0 : 1;
+    });
+    return box;
+  }
+
+  // from, to: snapshots, or null for the code as it stands.
+  function snap_compare(from, to) {
+    const now = { at: Date.now(), label: "current_state", files: snap_files(), current: true };
+    const all = [now].concat(store.snaps.slice().reverse());
+    let a = from || now;
+    let b = to || now;
+    const pick = (cur, set) => {
+      const sel = el("select", { class: "ai-sel" });
+      all.forEach((x, i) => sel.append(el("option", { value: String(i),
+        text: x.current ? t("current_state") : when(x.at) + " · " + snap_label(x.label) })));
+      sel.value = String(all.indexOf(cur));
+      sel.addEventListener("change", () => {
+        set(all[Number(sel.value)]);
+        paint();
+      });
+      return sel;
+    };
+    const out = el("div", { class: "diffs" });
+    const paint = () => {
+      out.textContent = "";
+      const fa = new Map(a.files);
+      const fb = new Map(b.files);
+      const names = [...new Set([...fa.keys(), ...fb.keys()])];
+      let any = false;
+      for (const name of names) {
+        const x = fa.has(name) ? fa.get(name) : null;
+        const y = fb.has(name) ? fb.get(name) : null;
+        if (x === y) {
+          continue;
+        }
+        any = true;
+        const ops = diff_lines(x === null ? "" : x, y === null ? "" : y);
+        const plus = ops.filter(([k]) => k === "+").length;
+        const minus = ops.filter(([k]) => k === "-").length;
+        out.append(el("details", { class: "diff-file", open: true },
+          el("summary", { text: name + (x === null ? t("diff_new") : y === null ? t("diff_gone") : "") + "  −" + minus + " +" + plus }),
+          diff_view(ops)));
+      }
+      if (!any) {
+        out.append(el("p", { class: "empty", text: t("diff_same") }));
+      }
+    };
+    paint();
+    sheet_open(t("snap_compare_title"), el("div", { class: "form" },
+      el("div", { class: "agent-grid" }, el("label", {}, t("diff_from"), pick(a, (x) => { a = x; })),
+        el("label", {}, t("diff_to"), pick(b, (x) => { b = x; }))), out));
+  }
+
   function projects_sheet() {
     if (agent_guard()) {
       return;
@@ -5620,7 +5882,10 @@
       hist.append(el("div", { class: "snap" },
         el("span", { class: "snap-at", text: when(snap.at) }),
         el("span", { class: "snap-what", text: snap_label(snap.label) + ", " + snap_delta(snap) }),
-        el("button", { class: "chip", type: "button", text: t("restore"), onclick: () => { close(); snap_restore(snap); } })));
+        el("span", { class: "snap-acts" },
+          el("button", { class: "chip", type: "button", text: t("snap_diff"), onclick: () => { close(); snap_compare(snap, null); } }),
+          el("button", { class: "chip", type: "button", text: t("snap_export"), onclick: () => snap_export(snap) }),
+          el("button", { class: "chip", type: "button", text: t("restore"), onclick: () => { close(); snap_restore(snap); } }))));
     }
     const body = el("div", { class: "form" },
       el("label", {}, t("proj_open"), name,

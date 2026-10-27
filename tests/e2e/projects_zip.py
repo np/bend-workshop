@@ -43,7 +43,7 @@ with sync_playwright() as p:
     page.click("#btn-proj"); page.click("summary"); time.sleep(0.2)
     print("6 snapshots:", [t.replace("\n", " | ") for t in page.locator(".snap").all_inner_texts()])
     page.screenshot(path=shot("shot_p1.png"))
-    page.locator(".snap button").first.click(); ok(page)
+    page.locator(".snap button", has_text="Restaurer").first.click(); ok(page)
     print("7 restored:", repr(code(page)[-6:]))
 
     # --- export, then import what was exported

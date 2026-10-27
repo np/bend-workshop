@@ -11,7 +11,7 @@ function expected(name, r, out) {
   if (name.endsWith(".js")) {
     return "an effect, not an entry";
   }
-  if (!r.ok && /TODO/.test(r.text) && (name.endsWith("LAWS.bend") || name === "bounty.bend")) {
+  if (!r.ok && (/TODO/.test(r.text) || (r.open && (r.goals || []).every((g) => g.name === "TODO"))) && (name.endsWith("LAWS.bend") || name === "bounty.bend")) {
     return "holes by design";
   }
   if (/Window\.open: no display/.test(out)) {

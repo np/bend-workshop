@@ -17,6 +17,11 @@ with sync_playwright() as p:
     page.evaluate("""(code) => { const ta = document.querySelector('#ed-ta'); ta.focus(); ta.select(); document.execCommand('insertText', false, code); }""", CODE); time.sleep(1)
     for needle, off, label in [("a + b", 2, "+ U32"), ("b * 2", 2, "* U32"), ("x / 2.0", 2, "/ F32"), ("p && q", 3, "&&"), ("s ++", 3, "++"), ("n < 3n", 2, "< Nat"), ("1 <> []", 3, "<>"), ("a % b", 2, "% U32")]:
         print(label, "→", at(page, needle, off))
+    # glued, and inside plain parentheses: every operator of the group is read
+    page.evaluate("""() => { const ta = document.querySelector('#ed-ta'); ta.focus(); ta.select(); document.execCommand('insertText', false, 'import Base\\n\\ndef f(a: Nat, b: Nat, c: Nat) -> Nat:\\n  (a + (b*c):Nat)\\n'); }"""); time.sleep(0.8)
+    plus, star = at(page, "a + ", 2), at(page, "*c", 0)
+    print("glued:", plus, star)
+    assert any("Nat.add" in r for r in plus) and any("Nat.mul" in r for r in star), "glued operators"
     # an operator with no annotation: the stand-in and its sheet
     page.evaluate("""() => { const ta = document.querySelector('#ed-ta'); ta.focus(); ta.select(); document.execCommand('insertText', false, 'import Base\\n\\ndef f(a: U32) -> U32:\\n  a + 1\\n'); }"""); time.sleep(0.8)
     print("no annotation →", at(page, "a + 1", 2))

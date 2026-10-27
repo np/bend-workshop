@@ -1424,9 +1424,19 @@
               }
             }
           };
-          req.onsuccess = () => done(req.result);
+          // a tab of an older page holding the database open blocks the
+          // upgrade: wait for it (it closes on versionchange, below) rather
+          // than give up, which would leave the memory unsaved
+          req.onsuccess = () => {
+            const db = req.result;
+            db.onversionchange = () => {
+              db.close();
+              ses.db = null;
+            };
+            done(db);
+          };
           req.onerror = () => done(null);
-          req.onblocked = () => done(null);
+          req.onblocked = () => setTimeout(() => done(null), 15000);
         } catch (e) {
           done(null);
         }

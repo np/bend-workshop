@@ -8,7 +8,7 @@ serve("dist", 8123)
 ONE = """import Base
 
 def f(x: Nat, y: Nat) -> Nat:
-  Nat.add(Nat.add(x, x), ?h)
+  Nat.add(Nat.add(y, y), ?h)
 """
 def check(label, *oks):
     print(label, *oks)
@@ -28,19 +28,24 @@ with sync_playwright() as p:
     page.click(".tab[data-tab=out]"); time.sleep(0.3)
     diag = page.inner_text("#diag")
     check("1 error first:", diag.lstrip().startswith("✗"), "consumed more than once" in diag)
-    page.locator("#diag .goto", has_text="Copy x").click(); time.sleep(0.4)
+    page.locator("#diag .goto", has_text="Copy y").click(); time.sleep(0.4)
     t1 = text(page)
-    check("1 wrapped:", "  match x:\n    case +x:\n      Nat.add(Nat.add(x, x), ?h)" in t1)
+    check("1 wrapped:", "  match y:\n    case +y:\n      Nat.add(Nat.add(y, y), ?h)" in t1)
+    # the browser's own undo takes it back in one step, and redo again
+    page.evaluate("document.querySelector('#ed-ta').focus()"); page.keyboard.press("Control+z"); time.sleep(0.3)
+    check("1 Ctrl+Z:", text(page) == ONE)
+    page.keyboard.press("Control+Shift+z"); time.sleep(0.3)
+    check("1 redo:", text(page) == t1)
     page.wait_for_selector("#verdict[data-state=goal]", timeout=30000)
-    set_code(page, t1.replace("?h", "Nat.add(y, y)"))
+    set_code(page, t1.replace("?h", "Nat.add(x, x)"))
     page.wait_for_selector("#verdict[data-state=bad]", timeout=30000); time.sleep(0.5)
     page.click(".tab[data-tab=out]"); time.sleep(0.3)
-    page.locator("#diag .goto", has_text="Copy y").click(); time.sleep(0.4)
+    page.locator("#diag .goto", has_text="Copy x").click(); time.sleep(0.4)
     t2 = text(page)
-    check("2 extended:", "  match x y:\n    case +x +y:\n      Nat.add(Nat.add(x, x), Nat.add(y, y))" in t2)
+    check("2 extended, in the parameters' order:", "  match x y:\n    case +x +y:\n      Nat.add(Nat.add(y, y), Nat.add(x, x))" in t2)
     page.wait_for_selector("#verdict[data-state=ok]", timeout=30000)
     page.locator(".toast button", has_text="Undo").click(); time.sleep(0.4)
-    check("3 undo:", "match x:\n" in text(page))
+    check("3 undo:", "match y:\n" in text(page))
     for e in errs: print("!!", e[:200])
     assert not errs
     b.close()

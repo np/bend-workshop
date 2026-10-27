@@ -30,8 +30,49 @@
 
   const OP_WALKED = new Set(["Bool.and", "Bool.or", "String.append"]);
 
+  // Whether the operator op at i of s is one, as parse_term_ops decides:
+  // + and - not before a name or >, a > not glued to what is before it, %
+  // before a space; a glued < opens type arguments. Spaces are not needed:
+  // (a+1n:Nat) is an operator.
+  function op_here(s, i, op) {
+    const nx = s[i + op.length] || " ";
+    const gl = /\S/.test(s[i - 1] || " ");
+    const head = /[A-Za-z_]/.test(nx);
+    return !(((op === "-" || op === "+") && (nx === ">" || head)) || (op[0] === ">" && gl)
+      || (op === "%" && !/\s/.test(nx)) || (op === "<" && gl));
+  }
+
+  // The annotation of a group's content: what is before its last top-level
+  // colon, and the type after it, spaces or not ((a + b:Nat) as (a + b : Nat)).
+  function op_annot(inner) {
+    let depth = 0;
+    let at = -1;
+    for (let i = 0; i < inner.length; i++) {
+      const c = inner[i];
+      if (c === "\"" || c === "'") {
+        for (i++; i < inner.length && inner[i] !== c; i++) {
+          if (inner[i] === "\\") {
+            i++;
+          }
+        }
+      } else if ("([{".includes(c)) {
+        depth++;
+      } else if (")]}".includes(c)) {
+        depth--;
+      } else if (depth === 0 && c === ":" && inner[i + 1] !== ":" && inner[i - 1] !== ":") {
+        at = i;
+      }
+    }
+    if (at < 0) {
+      return null;
+    }
+    const expr = inner.slice(0, at).trim();
+    const ty = inner.slice(at + 1).trim();
+    return expr !== "" && /^[A-Za-z_]/.test(ty) ? { expr, ty, ns: (/^[A-Za-z_][\w.]*/.exec(ty) || [""])[0] } : null;
+  }
+
   // The text between top-level operators: atoms and the operators between
-  // them, operators being the table's, with a space on each side.
+  // them, operators being the table's, read as Bend reads them (op_here).
   function op_tokens(s) {
     const out = [];
     let depth = 0;
@@ -51,19 +92,16 @@
         depth++;
       } else if (")]}".includes(c)) {
         depth--;
-      } else if (depth === 0 && /\s/.test(c)) {
-        let j = i;
-        while (j < s.length && /[ \t]/.test(s[j])) {
-          j++;
+      } else if (depth === 0 && s.slice(from, i).trim() !== "") {
+        // the longest operator here, as parse_term_ops takes it
+        let op = s.slice(i, i + 3);
+        while (op !== "" && Core.INFIX[op] === undefined) {
+          op = op.slice(0, -1);
         }
-        for (const n of [3, 2, 1]) {
-          const op = s.slice(j, j + n);
-          if (Core.INFIX[op] !== undefined && /\s/.test(s[j + n] || "")) {
-            out.push({ atom: s.slice(from, i).trim() }, { op });
-            i = j + n - 1;
-            from = j + n;
-            break;
-          }
+        if (op !== "" && op_here(s, i, op)) {
+          out.push({ atom: s.slice(from, i).trim() }, { op });
+          i += op.length - 1;
+          from = i + 1;
         }
       }
     }
@@ -111,7 +149,7 @@
   function op_atom(text) {
     if (text[0] === "(" && close_of(text, 0) === text.length - 1) {
       const inner = text.slice(1, -1).trim();
-      if (top_split(inner, " : ").length === 1 && split_top(inner).length === 1
+      if (op_annot(inner) === null && split_top(inner).length === 1
         && op_tokens(inner).some((x) => x.op !== undefined)) {
         return { group: op_tree(inner) };
       }
@@ -167,11 +205,10 @@
       }
     }
     if (s[0] === "(" && close_of(s, 0) === s.length - 1) {
-      const parts = top_split(s.slice(1, -1), " : ");
-      if (parts.length > 1) {
-        const ns = (/^[A-Za-z_][\w.]*/.exec(parts[parts.length - 1].trim()) || [""])[0];
+      const an = op_annot(s.slice(1, -1));
+      if (an !== null) {
         try {
-          return op_with_ns(op_tree(parts.slice(0, -1).join(" : ").trim()), ns);
+          return op_with_ns(op_tree(an.expr), an.ns);
         } catch (e) {
           return { atom: s };
         }
@@ -270,10 +307,9 @@
         const inner = text.slice(i + 1, shut);
         const call = c === "(" && /[\w.]/.test(text[i - 1] || "");
         if (c === "(" && !call) {
-          const parts = top_split(inner, " : ");
-          if (parts.length > 1) {
-            return { from: i, to: shut + 1, expr: parts.slice(0, -1).join(" : ").trim(),
-              ns: (/^[A-Za-z_][\w.]*/.exec(parts[parts.length - 1].trim()) || [""])[0] };
+          const an = op_annot(inner);
+          if (an !== null) {
+            return { from: i, to: shut + 1, expr: an.expr, ns: an.ns };
           }
           if (split_top(inner).length === 1) {
             continue;   // plain parentheses: the group may be further out

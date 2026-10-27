@@ -42,11 +42,15 @@ These shape every feature. Break one only with a reason written down here.
    the error excerpt with its caret, and the reading of imports and quantities
    follow `main.ts` and `bend.ts`. When the CLI changes, the page follows.
 7. **Nothing is lost.** Every page-made edit goes through the browser's undo
-   stack and ends in a message with *Undo* in the status line. Destructive steps take a snapshot
+   stack, as one step (`ed_rewrite` replaces only what differs, through
+   `execCommand`, whether lines change, come or go), and ends in a message
+   with *Undo* in the status line. Destructive steps take a snapshot
    first. Opening an example never overwrites work.
-8. **No telemetry.** The only request the page makes by itself is Google Fonts,
-   and Settings turns it off. Anything else is user-triggered: a hub import,
-   the assistant, the user's own programs.
+8. **No telemetry.** The page makes no request by itself: its fonts are
+   inside it. Only where a host refuses inline fonts (claude.ai's viewer)
+   does it ask Google Fonts for them, and Settings turns that off. Anything
+   else is user-triggered: a hub import, the assistant, the user's own
+   programs.
 9. **English by default, French too.** Every interface string lives in
    `src/i18n.js`. Compiler messages, the guide and example code stay in English.
 
@@ -54,7 +58,8 @@ These shape every feature. Break one only with a reason written down here.
 
 ```
 build.sh, package.json, BEND_COMMIT, AGENTS.md, README.md, .gitignore
-third_party/  UniiChat/ (its license, and what memory.js adapts from it)
+third_party/  UniiChat/ (its license, and what memory.js adapts from it),
+              fonts/ (JetBrains Mono, Source Serif 4: latin woff2, OFL)
 .github/      workflows/pages.yml (build, test, publish), dependabot.yml
 scripts/      gen_assets.mjs, gen_examples.mjs, build_html.mjs
 core/         entry.ts, shim/        (the bundle around Bend)
@@ -73,7 +78,7 @@ tests/e2e/shots/, tests/e2e/fixtures/fakehub/  what the tests write (ignored)
 | `scripts/gen_assets.mjs` | Writes `gen/assets.ts` (`base.bend`, the effects' `.js`, the operator table read from `bend.ts`, version and commit) and `gen/c_effects.json` (the effects' `.c`/`.h`, for the C output only) |
 | `scripts/gen_examples.mjs` | Writes `gen/examples.json`: guide snippets, demos and `ex/` files, titles, notes and groups in every language |
 | `build.sh` | esbuild → `dist/bend-core.js` (IIFE global `BendCore`) |
-| `scripts/build_html.mjs` | Renders `GUIDE.md`, compresses `gen/c_effects.json` (deflate-raw, base64), splices `opcall.js`, `moves.js`, `memory.js` and `agent.js` into `app.js`, fills `src/index.template.html` → `dist/index.html` |
+| `scripts/build_html.mjs` | Inlines the fonts (`third_party/fonts`, as data URLs, named *Workshop Mono* and *Workshop Serif*, being subsets), renders `GUIDE.md`, compresses `gen/c_effects.json` (deflate-raw, base64), splices `opcall.js`, `moves.js`, `memory.js` and `agent.js` into `app.js`, fills `src/index.template.html` → `dist/index.html` |
 | `src/app.js` | The whole interface, one IIFE, sectioned by `// Name` headers |
 | `src/opcall.js` | Operators ⇄ calls: the infix table's climbing, the namespace walk, printing with the fewest parentheses; spliced at `/*__OPCALL__*/` |
 | `src/moves.js` | Rename and move: the name scan, the plans (pure, tested in Node), the check before writing, their sheets; spliced at `/*__MOVES__*/` |
@@ -114,7 +119,7 @@ more), *Copy the versions*, and *Download this page (.html)*: on a web host
 the file as served (one request to the page's own address, on the tap);
 from `file://` or in the viewer, the page as it was before the app ran (read
 by the app's first statement, its script being the page's last, without the
-font links the head adds), which opens alone too. `build_html.mjs` reads the commit with git
+Google Fonts link the head may have added), which opens alone too. `build_html.mjs` reads the commit with git
 (`dev` outside a checkout) and the repository from `GITHUB_REPOSITORY`, else
 the `origin` remote, else `np/bend-workshop`. The header has no room for a
 GitHub icon at 360 px, hence the card.
@@ -193,7 +198,11 @@ cooperatively and Stop is a flag read each frame.
 - **Copies.** An error `x (consumed more than once)` on a def's parameter
   offers *Copy x*: the body opens with `match x:` / `case +x:` (the body
   shifted under it), or, when it already opens with such a copying match,
-  `x` joins it (`match a x:` / `case +a +x:`) rather than a new layer.
+  `x` joins it (`match a x:` / `case +a +x:`) rather than a new layer, in
+  the order of the def's parameters.
+- **`?TODO` is a goal too.** It does not stop the checker, so each one is
+  first renamed apart with a name as long (`?Tq00`…, no column moves), and
+  its goal comes back named `TODO`: a card like any hole's, one per `?TODO`.
 - **Every goal.** The checker stops at the first `?name`. `run` swaps the hole
   for `?TODO` and checks again until done. Columns are mapped back to the
   user's text (`col_back`), and so is the excerpt with its caret. Past 48 goals
@@ -362,6 +371,13 @@ type), the goal after `⊢`, and a toolbar.
     `&& || ++`, not into calls, `<>`, `&` or `|`. Any type that defines the
     verb works (`(s + x : Set)` is `Set.add(s, x)`). Literals stay as they are:
     `3` is a U32 in both forms, `3n` a Nat.
+  - *Reading operators* follows `parse_term_ops`: spaces are not needed
+    (`(a+1n*2n:Nat)`), the longest operator of the table is taken, except
+    `+`/`-` before a name or `>`, a `>` or `<` glued to what is before it
+    (type arguments), and `%` not followed by a space (`op_here`). The
+    annotation is the group's last top-level colon, spaced or not
+    (`op_annot`). Every operator of a group is read, through plain
+    parentheses, up to its annotation.
   - *From operators* (caret on one): the scope is the nearest enclosing
     `( … : T)` (plain parentheses inside it belong to the same walk), else the
     comma-separated slot or statement. Precedence and associativity come
@@ -419,6 +435,19 @@ type), the goal after `⊢`, and a toolbar.
   before deletes and restores. Edits within 3 minutes share a slot, except the
   session's first, which is kept intact. Each project keeps 30; when the
   storage is full, the oldest automatic snapshots are pruned.
+- **The project's id** goes with every export (`.workshop/project.json` in a
+  zip, `id` in the `.json`). Imported back, a single zip or `.json` whose
+  id is a project of this browser is a new version of it, not a project:
+  that project opens, a snapshot is taken ("before an import"), the files
+  take their place, another snapshot ("imported"), and the message offers
+  Undo; its memory replaces the project's only when it holds more. An id
+  unknown here makes a new project that keeps it.
+- **History** (Projects, *History*): each snapshot can be *Restored*,
+  *Exported* (a zip of its own, with the project's id and its date in the
+  name), or *Diffed*: a sheet compares any two versions, snapshots or the
+  code as it stands, file by file, as hunks with three lines around (a
+  longest common subsequence; past 4 million cells, the block between the
+  common head and tail).
 - **Export.** A zip of the plain files in one folder, so that
   `bend main.bend` runs once unzipped. The writer only stores (no compression);
   the reader inflates through `DecompressionStream`. *Export as .json* gives
@@ -433,6 +462,8 @@ type), the goal after `⊢`, and a toolbar.
   `0x<hash>/` or `names/` entries) goes to the hub cache instead, each package
   checked against its manifest (sha256). A memory found in a zip or a
   `.json` becomes the new project's.
+- **While the agent works** no other project can open (an example, a guide
+  snippet, an import, a switch): the agent writes to the open one.
 
 ## Hub
 
@@ -533,7 +564,14 @@ type), the goal after `⊢`, and a toolbar.
   fits. `zoom(id, n)` opens a line into its two halves, `zoom(id, 1)` gives a
   message whole, and `search(text)` finds messages. The chat lives in
   IndexedDB (database `bend-workshop`, store `chats`, by project id);
-  without it, for the page's life. The Agent tab's *Memory* view shows the
+  without it, for the page's life. A memory that could not be read (the
+  database out of reach for a moment) never overwrites a stored one; an
+  upgrade of the database blocked by a tab of an older page waits for it
+  (that tab closes its connection on `versionchange`) rather than giving
+  up; saves are per project and flushed when the page goes. The memory
+  belongs to the browser's origin: another address (a downloaded file, a
+  new artifact of the viewer, a private window) starts with none, as it
+  starts with no projects. The Agent tab's *Memory* view shows the
   view line by line, each opening down to its messages, and *Forget* clears
   it, with Undo. While a batch of summaries is written, the tab shows a bar
   of how far the view has shrunk toward half its budget.
@@ -704,13 +742,17 @@ type), the goal after `⊢`, and a toolbar.
 - **The scripts.** Basics: `errors_goals_persist`, `themes_csp`,
   `iframe_sandbox`, `no_storage`, `settings_files_base`,
   `typing_guide_effect_hub`, `projects_zip`, `export_viewer`, `network_audit`,
-  `fonts_off`, `languages`, `portuguese`. Windows: `window_demos`,
+  `fonts_off` (no request, the fonts inline; off; a CSP refusing them),
+  `languages`, `portuguese`. Windows: `window_demos`,
   `window_mobile`, `window_iframe_csp`, `window_no_worker`,
   `window_page_mode_mobile`, `timers_busy` (Bend's `within_busy` through both
   loops), `window_text` (typed text as `Text` events, worker and page). Proof tools: `goals_signatures`, `kept_goals_tooltip`, `long_goals`,
   `split`, `split_narrow`, `split_disabled`, `split_imported` (an import
   added), `constructors`, `solve_lazy`, `lemma`, `lemma_mobile`, `lemma_pong`,
-  `lemma_template` (`~f`), `rewrite`, `copy_match`, `find_comment`, `lawdef_pong`, `operators`, `opcalls`,
+  `lemma_template` (`~f`, Ctrl+Z), `rewrite`, `copy_match` (Ctrl+Z, the
+  parameters' order), `find_comment`, `project_versions` (the id in the
+  zip, a version imported, Undo, a snapshot exported, diffs, an unknown
+  id kept), `todo_goals` (`?TODO` cards, no snippet during the agent), `lawdef_pong`, `operators`, `opcalls`,
   `sigs_marks_lawdef_ai`, `refactors` (caret per file across a reload, an
   imported type's constructors, rename, move, a cycle refused). Outputs: `verdict_bendtt`, `compiler_outputs`,
   `heavy_demos`. Hub: `hub` (a fake package with real hashes, from

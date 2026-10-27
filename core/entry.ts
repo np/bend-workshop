@@ -439,6 +439,27 @@ async function run_go(files: Record<string, string>, entry: string,
   const goals: Goal[] = [];
   let book: Bend.Book | null = null;
   let from = 0;
+  // A ?TODO does not stop the checker, so it would show no goal: each one
+  // is first named apart, with a name as long (?Tq00..), so no column
+  // moves, and its goal comes back as TODO's.
+  const todo_as: Record<string, true> = {};
+  let n_todo = 0;
+  for (const f of Object.keys(cur)) {
+    if (f.endsWith(".bend") && cur[f].includes(TODO)) {
+      cur[f] = cur[f].replace(/\?TODO(?![\w.])/g, (all) => {
+        for (;;) {
+          const name = "Tq" + (n_todo++).toString(36).padStart(2, "0");
+          if (name.length === 4 && !cur[f].includes("?" + name)) {
+            todo_as[name] = true;
+            return "?" + name;
+          }
+          if (n_todo > 1295) {
+            return all;
+          }
+        }
+      });
+    }
+  }
   // Every ?name is a goal worth showing, so check again past each one.
   for (;;) {
     try {
@@ -448,6 +469,10 @@ async function run_go(files: Record<string, string>, entry: string,
       break;
     } catch (e) {
       const g = goal_of(e, cur);
+      if (g !== null && todo_as[g.name]) {
+        delete todo_as[g.name];
+        Object.assign(g, { name: "TODO", shown_as: g.name });
+      }
       if (g === null) {
         ms.check = performance.now() - t0;
         const where = err_where(e, cur, swaps);
@@ -468,7 +493,7 @@ async function run_go(files: Record<string, string>, entry: string,
       const col  = col_back(back, g.line, g.at);
       const lns  = cur[g.file].split("\n");
       const l    = lns[g.line - 1];
-      lns[g.line - 1] = l.slice(0, g.at - 1) + TODO + l.slice(g.at + g.name.length);
+      lns[g.line - 1] = l.slice(0, g.at - 1) + TODO + l.slice(g.at + ((g as { shown_as?: string }).shown_as ?? g.name).length);
       cur[g.file] = lns.join("\n");
       back.push({ line: g.line, col, len: g.name.length + 1 });
       goals.push({ name: g.name, def: g.def, file: g.file, line: g.line, col,
