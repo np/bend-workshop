@@ -123,6 +123,8 @@ with sync_playwright() as p:
     ins = run(page, [[["list_holes", {}]]], ["Listed.\nSTATUS: done"], task="List the holes.")
     bar = page.evaluate("window.__bar")
     check("6 a bar while summarising:", bar[:6], len(bar) > 0, page.locator(".mem-shrink").count() == 0)
+    mem_entry = page.locator(".agent-log .ag-mem").first.inner_text()
+    check("6 a journal entry for the summaries:", mem_entry, mem_entry.startswith("Memory summarised"))
     c = chat_of(ins[0])
     import re
     spans = [int(m) for m in re.findall(r"^\d+\+(\d+)\|", c[7:], re.M)]

@@ -46,12 +46,13 @@ with sync_playwright() as p:
     page.locator(".cv-fold > summary", has_text="Tools offered").first.click(); time.sleep(0.2)
     print("3b tools:", page.locator(".cv-fold > summary", has_text="fill_hole(hole, code)").count() > 0,
           "| cards:", page.locator(".cv-msg").count(), "| calls:", page.locator(".cv-msg .cv-call-head").all_inner_texts()[:3])
-    page.locator(".cv-fold > summary", has_text="Files (").first.click(); time.sleep(0.2)
-    page.locator(".cv-file > summary").first.click(); time.sleep(0.2)
-    print("3c file:", page.locator(".cv-file").first.locator("summary").inner_text(), "| numbered:", page.locator(".cv-file .cv-gut").first.inner_text().split("\n")[:3],
-          "| highlighted:", page.locator(".cv-file .cv-src .tk-kw").count() > 0)
+    start = page.locator(".cv.note").last  # newest first: the session's start at the bottom
+    start.locator(".cv-fold > summary", has_text="Files (").first.click(); time.sleep(0.2)
+    start.locator(".cv-file > summary").first.click(); time.sleep(0.2)
+    print("3c file:", start.locator(".cv-file").first.locator(":scope > summary").inner_text(), "| numbered:", start.locator(".cv-file .cv-gut").first.inner_text().split("\n")[:3],
+          "| highlighted:", start.locator(".cv-file .cv-src .tk-kw").count() > 0)
     page.screenshot(path=shot("shot_conv_rich.png"), full_page=True)
-    ends = page.locator(".cv.note").last
+    ends = page.locator(".cv.note").first  # newest first: the end on top
     print("3d end:", ends.locator(".cv-fold > summary").first.inner_text())
     page.screenshot(path=shot("shot_conv.png"))
     # kept across a reload

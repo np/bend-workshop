@@ -45,7 +45,7 @@ with sync_playwright() as p:
     # refine: holes only, close each goal, budget 7, and a word
     page.locator(".agent-resume .chip", has_text="Only chosen holes").click(); time.sleep(0.3)
     page.locator(".agent-resume .agent-holes label", has_text="?base").locator("input").check()
-    page.locator(".agent-resume label.check input").check()
+    page.locator(".agent-resume label.check:not(.auto) input").check()
     page.fill("#agent-budget", "7")
     page.fill("#agent-note", "The API was overloaded: just fill ?base with {==}.")
     page.locator(".agent-resume .btn", has_text="Continue the session").click()

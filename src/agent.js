@@ -21,14 +21,18 @@
     log: [], ctl: null, queue: Promise.resolve(), mode: "project", holes: [], close: false,
     entry: "", task: "", before: null, done: false, last: "", raf: 0,
     trace: [], t0: 0, wall: 0, notes: [], ended: "", note_draft: "", lim: null, mem: null, shrink: null,
+    auto: true, status: "", open: new Set(),
   };
 
   // Everything said and done in a session, for whoever debugs it: what the
   // page sent (prompts, API requests), what came back (replies, raw
   // responses), each tool call with the exact text it returned, pauses and
   // the end. Never a key.
-  function trace(type, data) {
-    agent.trace.push(Object.assign({ t: Math.round(performance.now() - agent.t0), type }, data));
+  // Each event names the journal entry it belongs to (j): the one given, or
+  // the latest; so an entry unfolds into what was said and done for it.
+  function trace(type, data, entry) {
+    const j = entry ? agent.log.indexOf(entry) : agent.log.length - 1;
+    agent.trace.push(Object.assign({ t: Math.round(performance.now() - agent.t0), type }, data, j >= 0 ? { j } : {}));
   }
   // What a session may carry, by provider; a profile's own numbers (AI
   // settings, Agent limits) override these. files: characters of the
@@ -197,7 +201,9 @@
       return;
     }
     const lim = agent.lim || agent_limits(cfg);
-    // the summaries can take a while: a bar shows how far they are
+    // the summaries can take a while: a bar shows how far they are, and
+    // the journal an entry, which unfolds into each summary written
+    const entry = mem_size(agent.mem) > lim.memory ? agent_log({ kind: "memory", merged: 0, asked: 0, state: "run" }) : null;
     let r;
     try {
       r = await mem_shrink(agent.mem, lim.memory, mem_asker(cfg), cfg.provider === "claude" ? 3 : 6, lim.ctx, (part) => {
@@ -206,6 +212,9 @@
       });
     } finally {
       agent.shrink = null;
+      if (entry !== null) {
+        Object.assign(entry, r || {}, { state: r ? "ok" : "err" });
+      }
       agent_paint_soon();
     }
     if (r.merged > 0) {
@@ -700,6 +709,7 @@
   // --------
 
   function agent_log(e) {
+    e.at = Date.now();
     agent.log.push(e);
     agent_paint_soon();
     return e;
@@ -769,23 +779,76 @@
     });
   }
 
-  function agent_status(text) {
-    const m = /STATUS:\s*(done|continue|blocked)/i.exec(text || "");
-    return m ? m[1].toLowerCase() : "done";
+  // How a message ends: its last STATUS line (done, continue, blocked), or
+  // "unclear" with none, or when the reply was cut.
+  function agent_status(text, cut) {
+    const all = [...String(text || "").matchAll(/STATUS:\s*\**\s*(done|continue|blocked)\b/gi)];
+    return cut || all.length === 0 ? "unclear" : all[all.length - 1][1].toLowerCase();
   }
 
   // Why the agent's turn ended, in its own last words, for the brief of a
   // session taken up again. A stop or an error says so itself.
-  function agent_why(text) {
+  function agent_why(text, cut) {
     if (!agent.running) {
       return;
     }
-    const s = agent_status(text);
+    const s = agent_status(text, cut);
+    agent.status = s;
     agent.ended = s === "blocked" ? "you said you were blocked"
-      : s === "continue" ? "you wanted to go on but called no tool" : "you said you were done";
+      : s === "continue" ? "you wanted to go on but called no tool"
+        : s === "unclear" ? (cut ? "your reply was cut off" : "your message ended without a STATUS line") : "you said you were done";
+  }
+
+  // After a turn that ended by itself: should the page take it up again?
+  // Unclear or continue, always; done, when the check says otherwise (an
+  // error, or a hole of a hole session still open); blocked, never. Each
+  // leg may do it AGENT_AGAIN times in a row without a tool call between.
+  const AGENT_AGAIN = 3;
+
+  async function agent_again() {
+    if (!agent.running || !agent.auto || agent.status === "blocked") {
+      return null;
+    }
+    const left = agent.mode === "holes" ? agent.holes.filter(hole_open) : [];
+    if (agent.status === "unclear" || agent.status === "continue") {
+      // a hole session with nothing left to fill is over, whatever it said
+      return agent.mode === "holes" && left.length === 0 ? null : agent.ended;
+    }
+    if (left.length > 0) {
+      return "you said you were done, but these holes are still open: " + left.map((h) => "?" + h).join(", ");
+    }
+    const r = await comp_ask(agent.entry, false);
+    if (!r.ok && !r.open && !r.stopped) {
+      return "you said you were done, but the check from " + agent.entry + " fails: " + err_brief(r);
+    }
+    return null;
   }
 
   const AGENT_REF = ["Syntax Reference", "Laws and Proofs"];
+
+  // The rules of the brief: the page's, then the user's own (Settings),
+  // which win where they disagree. Neither changes from call to call.
+  function agent_rules(compact) {
+    const rules = [
+      "You are an agent at work in the Bend 2 workshop, a web page that runs Bend's own checker and compiler. Bend 2 is a functional language with dependent types, affine variables and a termination checker; its syntax is Python-shaped, its semantics close to Lean.",
+      "Change the project only through your tools. Read before you edit; use lookup for the signature of any name you use, and guide for the syntax.",
+      "What you may change is in <rights>, near the end: the user may change it between calls. Base (read_file \"Base\") and hub modules are read-only.",
+      "Every write is checked at once and the verdict comes back to you. Rely on it: a proof counts only when the checker accepts it, the verdict reading ALL PROOFS CHECK. Never claim that something works unless a check or a run showed it.",
+      "Prefer small steps: one hole, one lemma, one fix at a time, then look at the verdict. A ?name in the code prints its goal on the next check, with its context: use that to see what is wanted.",
+      "<chat> is your memory: this project's whole chat with you, across sessions, oldest first, as one-line summaries. Each line id+n|text stands for the n messages from id on. Kinds: user (the user's words), agent (your replies), tool (your tool calls, each with what it returned), note (the page's records: sessions started and ended, final checks, undos). Recent lines cover one message each; the older, the more a line covers. A long message shows as its beginning, then (zoom for all). Its latest word on a thing is the truth, except for the files, which <files> gives as they stand now. zoom(id, n) opens line id+n into the two lines under it, zoom(id, 1) gives message id whole, and search(text) finds the messages that hold a text. Zoom whenever a line only mentions what you need (a past attempt, an error, a decision) before you act, guess or ask; do not redo what <chat> shows done.",
+    ];
+    if (compact) {
+      rules.push("This call allows only a few tool rounds; the session goes on in further calls, each with your memory as it then stands. Spend the rounds on the work: a write, a check, a run.");
+    }
+    rules.push("End your final message with a last line that is exactly one of: STATUS: done (the task is done and the checker agrees), STATUS: continue (there is more to do and you will do it), STATUS: blocked (you cannot go on without the user: say why above it). Never stop without that line: a message without it, or with STATUS: continue, makes the page call you again. Say done only once a check shows the task done; say blocked only when the user must act or decide."
+      + (compact ? " Before STATUS: continue, write a NEXT: section: the concrete steps still to take, starting with the very next tool call; it stays in your memory for the next call." : "")
+      + " Write that message in " + LANG_NAMES[lang] + ".");
+    const own = (state.ai.instructions || "").trim();
+    if (own !== "") {
+      rules.push("The user's own instructions, which take precedence over the rules above where they disagree:\n" + own);
+    }
+    return rules;
+  }
 
   // What the agent is told: who it is, what it may do, the reference, its
   // memory (the view of the project's chat), the project as it stands, the
@@ -803,20 +866,7 @@
       }
     }).join("\n\n") : md;
     const locks = state.files.filter((f) => agent_locked(f.name)).map((f) => f.name);
-    const rules = [
-      "You are an agent at work in the Bend 2 workshop, a web page that runs Bend's own checker and compiler. Bend 2 is a functional language with dependent types, affine variables and a termination checker; its syntax is Python-shaped, its semantics close to Lean.",
-      "Change the project only through your tools. Read before you edit; use lookup for the signature of any name you use, and guide for the syntax.",
-      "What you may change is in <rights>, near the end: the user may change it between calls. Base (read_file \"Base\") and hub modules are read-only.",
-      "Every write is checked at once and the verdict comes back to you. Rely on it: a proof counts only when the checker accepts it, the verdict reading ALL PROOFS CHECK. Never claim that something works unless a check or a run showed it.",
-      "Prefer small steps: one hole, one lemma, one fix at a time, then look at the verdict. A ?name in the code prints its goal on the next check, with its context: use that to see what is wanted.",
-      "<chat> is your memory: this project's whole chat with you, across sessions, oldest first, as one-line summaries. Each line id+n|text stands for the n messages from id on. Kinds: user (the user's words), agent (your replies), tool (your tool calls, each with what it returned), note (the page's records: sessions started and ended, final checks, undos). Recent lines cover one message each; the older, the more a line covers. A long message shows as its beginning, then (zoom for all). Its latest word on a thing is the truth, except for the files, which <files> gives as they stand now. zoom(id, n) opens line id+n into the two lines under it, zoom(id, 1) gives message id whole, and search(text) finds the messages that hold a text. Zoom whenever a line only mentions what you need (a past attempt, an error, a decision) before you act, guess or ask; do not redo what <chat> shows done.",
-    ];
-    if (compact) {
-      rules.push("This call allows only a few tool rounds; the session goes on in further calls, each with your memory as it then stands. Spend the rounds on the work: a write, a check, a run.");
-    }
-    rules.push("End your final message with one line: STATUS: done (the task is done), STATUS: continue (you have more to do and want to go on), or STATUS: blocked (say why)."
-      + (compact ? " Before STATUS: continue, write a NEXT: section: the concrete steps still to take, starting with the very next tool call; it stays in your memory for the next call." : "")
-      + " Write that message in " + LANG_NAMES[lang] + ".");
+    const rules = agent_rules(compact);
     const files = state.files.filter((f) => /\.(bend|js)$/.test(f.name));
     const size = files.reduce((n, f) => n + f.text.length, 0);
     const chat = agent.mem === null || agent.mem.msgs.length === 0 ? "(empty: this is the project's first message)" : mem_lines(agent.mem).join("\n");
@@ -857,6 +907,7 @@
     const tools = agent_tools();
     for (;;) {
       const before = agent.steps;
+      await agent_settle(cfg);
       const say = agent_log({ kind: "say", text: "" });
       const opts = { signal: agent.ctl.signal,
         onText: ({ text }) => {
@@ -874,10 +925,9 @@
       if (CLAUDE_TIERS.includes(cfg.model)) {
         opts.modelTier = cfg.model;
       }
-      await agent_settle(cfg);
       const prompt = agent_brief(true);
       const leg = agent.trace.filter((x) => x.type === "claude_call").length + 1;
-      trace("claude_call", { leg, model_tier: opts.modelTier || "default", prompt });
+      trace("claude_call", { leg, model_tier: opts.modelTier || "default", prompt }, say);
       let got;
       try {
         got = await ai.sample(prompt, opts);
@@ -885,14 +935,14 @@
         trace("claude_error", { leg, code: e && e.code, message: e && e.message, text: e && e.text });
         throw e;
       }
-      trace("claude_reply", { leg, text: got.text, truncated: got.truncated, status: agent_status(got.text) });
+      trace("claude_reply", { leg, text: got.text, truncated: got.truncated, status: agent_status(got.text, got.truncated) }, say);
       say.text = got.text;
       agent.last = got.text;
       if (got.text.trim()) {
         mem_log("agent", got.text);
       }
-      if (!agent.running || agent_status(got.text) !== "continue" || agent.steps === before) {
-        agent_why(got.text);
+      if (!agent.running || agent_status(got.text, got.truncated) !== "continue" || agent.steps === before) {
+        agent_why(got.text, got.truncated);
         return;
       }
       agent_log({ kind: "note", text: t("agent_again") });
@@ -942,7 +992,7 @@
         system: [{ type: "text", text: sys, cache_control: { type: "ephemeral" } }],
         tools: tools.map((tl) => ({ name: tl.name, description: tl.description, input_schema: tl.schema })), messages: msgs });
       const blocks = data.content || [];
-      return { text: blocks.filter((b) => b.type === "text").map((b) => b.text).join("\n"),
+      return { text: blocks.filter((b) => b.type === "text").map((b) => b.text).join("\n"), cut: data.stop_reason === "max_tokens",
         calls: blocks.filter((b) => b.type === "tool_use").map((b) => ({ id: b.id, name: b.name, input: b.input || {} })),
         said: { role: "assistant", content: blocks },
         answer: (rs) => [{ role: "user", content: rs.map((r) => ({ type: "tool_result", tool_use_id: r.id, content: r.text, is_error: !r.ok })) }] };
@@ -964,7 +1014,7 @@
     if (m.tool_calls && m.tool_calls.length) {
       said.tool_calls = m.tool_calls;
     }
-    return { text: m.content || "", calls, said,
+    return { text: m.content || "", calls, said, cut: ((data.choices || [])[0] || {}).finish_reason === "length",
       answer: (rs) => rs.map((r) => ({ role: "tool", tool_call_id: r.id, content: r.ok ? r.text : "Error: " + r.text })) };
   }
 
@@ -1006,7 +1056,7 @@
       }
       agent.last = reply.text || agent.last;
       if (reply.calls.length === 0) {
-        agent_why(reply.text);
+        agent_why(reply.text, reply.cut);
         return;
       }
       msgs.push(reply.said);
@@ -1131,10 +1181,26 @@
     document.body.classList.add("agent-busy");
     agent_paint();
     try {
-      if (cfg.provider === "claude") {
-        await agent_claude(cfg);
-      } else {
-        await agent_api(cfg);
+      // a turn that ends unclear, or done while the check disagrees, is
+      // taken up again by the page itself, a few times in a row at most
+      for (let left = AGENT_AGAIN; ;) {
+        const before = agent.steps;
+        agent.status = "";
+        if (cfg.provider === "claude") {
+          await agent_claude(cfg);
+        } else {
+          await agent_api(cfg);
+        }
+        const why = await agent_again();
+        left = agent.steps > before ? AGENT_AGAIN : left - 1;
+        if (why === null || left <= 0) {
+          break;
+        }
+        agent.ended = why;
+        agent.auto_n = (agent.auto_n || 0) + 1;
+        trace("auto_resume", { why, left });
+        agent_log({ kind: "note", text: t("agent_auto_again", why) });
+        mem_log("note", "The page takes the session up again by itself: " + why + ".");
       }
     } catch (e) {
       if (!(e && e.code === "cancelled")) {
@@ -1439,7 +1505,7 @@
   // The trace as it happened, every message whole, the long ones folded;
   // appended to as the session goes, so folds opened stay open.
 
-  const conv = { el: null, key: "", n: 0, ids: {}, start: null, tools: null };
+  const conv = { el: null, key: "", n: 0, ids: {}, start: null, tools: null, wall: 0 };
 
   function kb(n) {
     return (n / 1024).toFixed(1).replace(".", t("decimal")) + " " + t("kb");
@@ -1477,7 +1543,8 @@
       + (usage ? t("conv_tokens", tin, tout) : "");
   }
 
-  function conv_view(trace, key) {
+  function conv_view(trace, key, wall) {
+    conv.wall = wall;
     if (conv.el === null || conv.key !== key || conv.n > trace.length) {
       conv.el = el("div", { class: "conv" });
       conv.key = key;
@@ -1486,8 +1553,19 @@
       conv.start = null;
       conv.tools = null;
     }
+    // newest first, as the journal
     for (; conv.n < trace.length; conv.n++) {
-      conv.el.append(conv_event(trace[conv.n]));
+      const row = conv_event(trace[conv.n]);
+      const j = trace[conv.n].j;
+      if (j !== undefined) {
+        row.firstChild.append(" ", el("button", { class: "cv-to-j", type: "button", text: t("cv_to_journal"), onclick: () => {
+          agent.open.add(conv.wall + ":" + j);
+          agent.jump = j;
+          ses.mode = "journal";
+          agent_paint();
+        } }));
+      }
+      conv.el.prepend(row);
     }
     return conv.el;
   }
@@ -1769,7 +1847,7 @@
   }
 
   function conv_event(e) {
-    const at = "+" + (e.t / 1000).toFixed(1).replace(".", t("decimal")) + " s";
+    const at = (conv.wall ? clock(conv.wall + e.t) + " · " : "") + "+" + (e.t / 1000).toFixed(1).replace(".", t("decimal")) + " s";
     const row = (cls, head, ...kids) => el("div", { class: "cv " + cls }, el("div", { class: "cv-head" },
       el("span", { class: "cv-at", text: at }), " ", head), ...kids);
     const size = (x) => kb((typeof x === "string" ? x : JSON.stringify(x)).length);
@@ -1828,6 +1906,8 @@
         return row("note", t("conv_memory", e.merged, e.compactions, kb(e.view), e.messages));
       case "memory_call":
         return row("in", t("conv_memory_call", e.model, e.ms), cv_pre(e.reply));
+      case "auto_resume":
+        return row("note", t("agent_auto_again", e.why));
       default:
         return row(/error/.test(e.type) ? "err" : "note", e.type + (e.steps !== undefined ? " · " + e.steps : ""),
           /error/.test(e.type) ? cv_pre(e) : null);
@@ -1906,6 +1986,7 @@
     const history = m && m.msgs.length ? mem_cut(mem_lines(m).join("\n"), 16000) : "";
     return ["I am working on a Bend 2 project in the Bend 2 pocket workshop (https://np.github.io/bend-workshop/), and hand it over to you: work on it with the bend CLI on my computer.",
       "Task: " + task,
+      (state.ai.instructions || "").trim() ? "My standing instructions:\n" + state.ai.instructions.trim() : "",
       "Setup: if bend is missing, install it with `curl -fsSL https://bend-lang.com/install.sh | sh`; `bend guide` prints the guide. Write the files below in a new folder and work there: run `bend " + entry + "`"
         + (files.some((f) => f.name === "PROOF.bend") ? " and `bend PROOF.bend`" : "") + " after each change, until the verdict reads ALL PROOFS CHECK, and say what `bend " + entry + " --verdict` answers.",
       "When you are done, give me every file you changed or created, whole, each in a fenced block whose info string is `bend path=<its path>` (or `js path=<its path>`), so that the workshop can take them back. Answer me in " + LANG_NAMES[lang] + ".",
@@ -2015,7 +2096,6 @@
       return;
     }
     const keepTask = $("#agent-task") ? $("#agent-task").value : agent.draft || "";
-    const atBottom = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 40;
     pane.textContent = "";
     const box = el("div", { class: "agent" });
     if (!agent_ok() && !agent.running) {
@@ -2079,13 +2159,9 @@
     if (ses.mode === "memory") {
       box.append(mem_panel());
     } else if (ses.mode === "conversation" && trace.length > 0) {
-      box.append(conv_view(trace, past ? "past:" + past.id : "live:" + agent.wall));
+      box.append(conv_view(trace, past ? "past:" + past.id : "live:" + agent.wall, past ? past.id : agent.wall));
     } else {
-      const log = el("div", { class: "agent-log" });
-      for (const e of journal) {
-        log.append(agent_entry(e));
-      }
-      box.append(log);
+      box.append(journal_view(journal, trace, past ? past.id : agent.wall));
     }
     if (trace.length > 0) {
       box.append(el("div", { class: "row agent-export" }, el("span", { class: "dim", text: t("agent_export") }),
@@ -2106,9 +2182,61 @@
       box.append(ses_list());
     }
     pane.append(box);
-    if (agent.running && atBottom) {
-      pane.scrollTop = pane.scrollHeight;
+    if (agent.jump !== undefined) {
+      const at = pane.querySelector("[data-j=\"" + agent.jump + "\"]");
+      agent.jump = undefined;
+      if (at) {
+        at.scrollIntoView({ block: "start" });
+      }
     }
+  }
+
+  // The time of day, to the second.
+  function clock(ms) {
+    return new Date(ms).toLocaleTimeString(t("locale"), { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  }
+
+  // The journal, newest first: each entry with its time, and, when the
+  // trace says which events were its own, a fold that opens onto them (the
+  // prompt sent, the reply, the tool's exact answer, the summaries
+  // written). Folds stay open across repaints.
+  function journal_view(journal, trace, wall) {
+    const log = el("div", { class: "agent-log" });
+    const mine = new Map();
+    for (const ev of trace) {
+      if (ev.j !== undefined) {
+        mine.set(ev.j, (mine.get(ev.j) || []).concat([ev]));
+      }
+    }
+    const first = trace.find((x) => x.type === "session");
+    for (let j = journal.length - 1; j >= 0; j--) {
+      const e = journal[j];
+      const evs = mine.get(j) || [];
+      const key = wall + ":" + j;
+      const open = agent.open.has(key);
+      const item = el("div", { class: "ag-item", "data-j": String(j) });
+      const head = el("div", { class: "ag-when" }, el("span", { text: e.at ? clock(e.at) : "" }));
+      if (evs.length > 0) {
+        head.append(el("button", { class: "ag-unfold", type: "button", "aria-expanded": String(open),
+          text: (open ? "▾ " : "▸ ") + t("ag_events", evs.length), onclick: () => {
+            if (agent.open.has(key)) {
+              agent.open.delete(key);
+            } else {
+              agent.open.add(key);
+            }
+            agent_paint();
+          } }));
+      }
+      item.append(head, agent_entry(e));
+      if (open) {
+        conv.start = first ? first.files : null;
+        conv.tools = null;
+        conv.wall = wall;
+        item.append(el("div", { class: "ag-events" }, ...evs.map(conv_event)));
+      }
+      log.append(item);
+    }
+    return log;
   }
 
   // The settings of a new session, or (resume) of one taken up again: then
@@ -2205,10 +2333,14 @@
       store_main();
     });
     const budget = el("input", { id: "agent-budget", type: "number", min: "1", max: "500", value: String(agent.size) });
+    const auto = el("input", { type: "checkbox", id: "agent-auto" });
+    auto.checked = agent.auto;
+    auto.addEventListener("change", () => { agent.auto = auto.checked; });
     form.append(el("div", { class: "agent-grid" },
       el("label", {}, t("agent_entry"), entry),
       el("label", {}, t("ai_profile"), prof),
       el("label", {}, t("agent_budget"), budget)),
+      el("label", { class: "check auto" }, auto, el("span", {}, t("agent_auto"), el("br"), el("small", { text: t("agent_auto_hint") }))),
       resume
         ? el("div", { class: "row agent-end" },
           el("button", { class: "btn primary", type: "button", text: t("agent_resume"), onclick: agent_resume }),
@@ -2232,6 +2364,10 @@
     }
     if (e.kind === "err") {
       return el("div", { class: "ag-err", text: e.text });
+    }
+    if (e.kind === "memory") {
+      return el("div", { class: "ag-note ag-mem" + (e.state === "run" ? " run" : ""),
+        text: e.state === "run" ? t("ag_mem_run") : t("ag_mem_done", e.merged || 0, e.asked || 0) });
     }
     if (e.kind === "verdict") {
       return el("div", { class: "ag-verdict " + (e.ok ? "ok" : e.open ? "goal" : "bad"), text: t("agent_verdict", e.text) });

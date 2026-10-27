@@ -450,6 +450,11 @@ type), the goal after `⊢`, and a toolbar.
 
 ## Assistant
 
+- **Your instructions.** Settings has a text of the user's own, for every
+  profile: it follows the page's rules in the agent's brief (and in a
+  one-shot request, and the UniiChat message), and wins where they
+  disagree. The page's rules show read-only beside it. It is part of the
+  cached head, which changes only when the text does.
 - **Profiles.** Named, each with a provider (`claude` via the viewer's
   `sample` capability, `anthropic`, `openai`, `custom` OpenAI-shaped URL such
   as Ollama or LM Studio), a URL, a model and an optional key. Keys stay in
@@ -576,7 +581,7 @@ type), the goal after `⊢`, and a toolbar.
   session* restores the snapshot. Agent writes go straight to the text, not
   through the browser's undo stack, so no keyboard opens on a phone; the
   snapshot stands for undo.
-- **Taking a session up again.** A session that ended (an error, a stop,
+- **Taking a session up again** (by hand). A session that ended (an error, a stop,
   the agent done or blocked, the API out of breath) can be continued from
   the tab: under its journal, the same settings as a new session (what it
   may change, holes, the close option, locks, the file checked from, the
@@ -593,9 +598,25 @@ type), the goal after `⊢`, and a toolbar.
   of the open project (its record keeps the snapshot and the settings) can
   be taken up again too, after a reload: *Continue this session* makes it
   the tab's session.
-- **Journal.** It shows the agent's text, each tool call with its target,
-  ✓/✗ and the verdict after it, the diff of each write, and the output of each
-  run or eval.
+- **Ends.** The agent must end with a last line `STATUS: done`,
+  `STATUS: continue` or `STATUS: blocked`; the last such line counts. A
+  message without one, or cut off (`max_tokens`, `length`), is *unclear*.
+  With *Relaunch by itself* (on by default, in the session's settings) the
+  page takes the session up again, the reason in `<resumed>`, when a turn
+  ends unclear or with `continue` (unless a hole session has no hole
+  left), or says `done` while a hole of a hole session is still open or the
+  check fails; `blocked` always ends it. Three relaunches in a row without
+  a tool call between them end it too. Each relaunch is a journal note,
+  a memory note and an `auto_resume` event.
+- **Journal.** Newest first, so coming back to the tab shows the latest
+  without scrolling. Each entry has its time of day (to the second) and the
+  agent's text, each tool call with its target, ✓/✗ and the verdict after
+  it, the diff of each write, the output of each run or eval, or a batch of
+  memory summaries. Each trace event names the entry it belongs to (`j`),
+  so an entry unfolds (*▸ n events*) into its own part of the conversation:
+  a reply into its call (the prompt) and its answer, a tool into its exact
+  input and result, a summary batch into each summary written. Unfolded
+  entries stay open across repaints.
 - **Trace and export.** Every session also keeps a full trace, for
   debugging: the session's settings (profile without its key, mode, holes,
   locks, budget, tools offered, Bend version, files at the start), each Claude
@@ -607,7 +628,9 @@ type), the goal after `⊢`, and a toolbar.
   or `.md` (the same, readable, fences sized past any backticks inside). Keys
   are never recorded: request headers are not traced.
 - **Following a session.** Under the task, "Journal" shows the summary above
-  and "Conversation" the trace itself, live: each event with its time, the
+  and "Conversation" the trace itself, live, newest first: each event with
+  its time of day and its offset from the start, a *↩ journal* link to its
+  entry (opened there), the
   long parts (prompts, system, files, raw responses, long results) folded and
   built only when opened. Events are appended as they come, so open folds stay
   open. What a session carries is shown for what it is, not as JSON:
@@ -705,6 +728,9 @@ type), the goal after `⊢`, and a toolbar.
   quick tier past a small budget, the prompt cap, the Memory view, forget
   and Undo), `agent_memory_api` (Haiku summaries with a simulated
   Anthropic server, a long turn started again from the memory),
+  `agent_journal` (a reply without STATUS relaunched, the journal newest
+  first with times, an entry unfolded into its events, the conversation's
+  link back, the user's instructions in the prompt),
   `unii_handoff` (the message, UniiChat opened, files taken back, Undo),
   `export_memory_page` (the memory in the zip and the .json, unticked,
   imported back; the page downloaded as served, and from `file://`, each

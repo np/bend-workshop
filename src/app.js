@@ -124,7 +124,7 @@
     args: "",
     live: true,
     size: 14,
-    ai: { active: "", profiles: [] },
+    ai: { active: "", profiles: [], instructions: "" },
     fonts: true,
   };
 
@@ -234,6 +234,7 @@
     lang = main && LANGS[main.lang] ? main.lang : lang_guess();
     state.fonts = !(main && main.fonts === false);
     if (main && main.ai && typeof main.ai === "object") {
+      state.ai.instructions = typeof main.ai.instructions === "string" ? main.ai.instructions : "";
       if (Array.isArray(main.ai.profiles)) {
         state.ai.profiles = main.ai.profiles.filter((p) => p && typeof p.id === "string" && AI_PROVIDERS[p.provider]);
         state.ai.active = state.ai.profiles.some((p) => p.id === main.ai.active) ? main.ai.active : "";
@@ -4242,9 +4243,11 @@
       ask = "The declaration in question, from " + sig_source(d) + ":\n" + d.text;
     }
     const tail = "\n\n" + ask + "\n\nRequest: " + request + "\n\nAnswer in " + LANG_NAMES[lang] + ".";
+    const own = (state.ai.instructions || "").trim();
     const head = "You are helping someone write Bend 2, a functional language with dependent types, affine variables and a"
       + " termination checker, whose syntax is Python-shaped and whose semantics is close to Lean. Rely on the guide"
-      + " below for its syntax and its Base library; do not invent functions Base does not have.\n\n";
+      + " below for its syntax and its Base library; do not invent functions Base does not have.\n\n"
+      + (own ? "The user's own instructions, which take precedence where they disagree:\n" + own + "\n\n" : "");
     const room = AI_BUDGET - head.length - tail.length - work.length - 40;
     const guide = $("#bend-guide-md").textContent;
     const cut = room > 2000 ? (guide.length > room ? guide.slice(0, room) + "\n[guide cut here]" : guide) : "";
@@ -5854,6 +5857,28 @@
         paint();
       } });
       box.append(el("span", { text: t("ai_title") }), el("div", { class: "row" }, el("span", { class: "grow" }, sel), add));
+      // the user's own instructions, for every profile: after the page's
+      // rules, which they may complete or overrule; those shown beside
+      const own = el("textarea", { class: "ai-req", id: "ai-instructions", rows: "4", spellcheck: "true",
+        placeholder: t("ai_instr_ph"), "aria-label": t("ai_instr") });
+      own.value = state.ai.instructions || "";
+      own.addEventListener("input", () => {
+        state.ai.instructions = own.value;
+        store_main();
+      });
+      const instr = el("details", { class: "ai-instr", open: own.value.trim() !== "" },
+        el("summary", { text: t("ai_instr") + ((state.ai.instructions || "").trim() ? " ✓" : "") }),
+        el("div", { class: "ai-rows" }, own, el("small", { text: t("ai_instr_hint") }),
+          (() => {
+            const d = el("details", { class: "cv-fold" }, el("summary", { text: t("ai_instr_rules") }));
+            d.addEventListener("toggle", () => {
+              if (d.open && d.childNodes.length === 1) {
+                d.append(el("pre", { class: "cv-pre", text: agent_rules(true).filter((r) => !r.startsWith("The user's own")).join("\n\n") }));
+              }
+            });
+            return d;
+          })()));
+      box.append(instr);
       const cfg = ai_cfg();
       if (cfg === null) {
         box.append(el("small", { text: t("ai_hint_none") }));
