@@ -1018,6 +1018,10 @@
       const tokens = agent_limits(cfg).tokens;
       const data = await agent_post(url + "/v1/messages", { "x-api-key": cfg.key, "anthropic-version": "2023-06-01",
         "anthropic-dangerous-direct-browser-access": "true" }, Object.assign({ model, max_tokens: tokens,
+        // two cache points: the system (rules and guide), fixed, and the
+        // turn's exchange, which the API's automatic point follows as it
+        // grows; each request reads what the one before wrote
+        cache_control: { type: "ephemeral" },
         system: [{ type: "text", text: sys, cache_control: { type: "ephemeral" } }],
         tools: tools.map((tl) => ({ name: tl.name, description: tl.description, input_schema: tl.schema })), messages: msgs },
         agent_reasoning(cfg, model, tokens)));

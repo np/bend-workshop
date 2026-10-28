@@ -56,6 +56,7 @@ with sync_playwright() as p:
           a.get("thinking") == {"type": "adaptive", "display": "summarized"}, a.get("output_config") == {"effort": "high"}, a["max_tokens"] == 16000)
     sent_back = [c for m in bb["messages"] if m["role"] == "assistant" for c in m["content"]]
     check("2 the block goes back unchanged:", sent_back[0] == THINK)
+    check("2 the exchange cached too:", a.get("cache_control") == {"type": "ephemeral"}, a["system"][0].get("cache_control") == {"type": "ephemeral"})
     page.locator(".ag-think > summary").first.click(); time.sleep(0.2)
     check("2 journal shows the summary:", "reflexive" in page.inner_text(".ag-think-text"))
     for e in errs: print("!!", e[:200])

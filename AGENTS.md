@@ -602,7 +602,12 @@ type), the goal after `⊢`, and a toolbar.
   the prompt would pass what `sample.limits()` reports (`maxPromptBytes`,
   256 KiB today) less 20 KB, the files are left out (`read_file` remains).
   With an API, the page runs the loop itself (Anthropic
-  `tool_use`/`tool_result` with the system cached; OpenAI `tool_calls`/`tool`):
+  `tool_use`/`tool_result` with two cache points: the system, marked, and
+  the turn's exchange through the request's top-level `cache_control`,
+  which the API moves to the last block as it grows, so each request of a
+  turn reads what the one before wrote (0.05x to 0.1x the input price) and
+  writes only what it adds (1.25x); a turn of one request pays that
+  premium for nothing, a pause past 5 minutes rewrites once; OpenAI `tool_calls`/`tool`):
   the rules and the full guide are the system, the view and the rest the
   first message; when a turn's own exchange outgrows the memory's budget,
   the conversation starts again from the memory, where every step of it is
