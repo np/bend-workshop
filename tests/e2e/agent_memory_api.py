@@ -47,7 +47,7 @@ with sync_playwright() as p:
     page.click(".agent-form .btn:has-text('Start')"); page.wait_for_selector(".ag-verdict", timeout=60000); time.sleep(0.5)
     turns = [r for r in reqs if not (isinstance(r.get("system"), str) and r["system"].startswith("You write"))]
     comps = [r for r in reqs if isinstance(r.get("system"), str) and r["system"].startswith("You write")]
-    check("1 compactions:", len(comps), len(comps) > 0, comps[0]["model"] if comps else None, comps and comps[0]["model"] == "claude-haiku-4-5-20251001",
+    check("1 compactions:", len(comps), len(comps) > 0, comps[0]["model"] if comps else None, comps and comps[0]["model"] == "claude-haiku-5-5",
           "| asks for one line:", comps and "Merge lines" in comps[0]["messages"][0]["content"])
     restarts = [r for r in turns if len(r["messages"]) == 1 and "(Going on:" in r["messages"][0]["content"]]
     check("2 a long turn starts again from the memory:", len(restarts), len(restarts) > 0)

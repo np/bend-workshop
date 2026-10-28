@@ -59,6 +59,34 @@
       const n = Math.floor(Number(own[k]));
       out[k] = Number.isFinite(n) && n > 0 ? Math.min(n, AGENT_LIMIT_MAX[k]) : base[k];
     }
+    // thinking counts against a reply's tokens: more room by default
+    if (cfg && cfg.reasoning && !(Number(own.tokens) > 0)) {
+      out.tokens = 16000;
+    }
+    return out;
+  }
+
+  // Reasoning (a profile's setting): with Anthropic, adaptive thinking, its
+  // summaries shown (models before 4.6 take a token budget instead), and an
+  // effort; with OpenAI, the effort alone. Empty: the model's own default
+  // (Claude Opus 5.5 and the newest models think by default, summaries
+  // hidden). Thinking blocks go back as they came, in a turn's exchange.
+  const OLD_THINKING = /claude-(3|haiku-4-5|sonnet-4-5|sonnet-4-0|sonnet-4-2|opus-4-0|opus-4-1|opus-4-5|opus-4-2)/;
+
+  function agent_reasoning(cfg, model, tokens) {
+    const out = {};
+    const old = OLD_THINKING.test(model);
+    if (cfg.provider === "anthropic") {
+      if (cfg.reasoning === "adaptive") {
+        out.thinking = old ? { type: "enabled", budget_tokens: Math.max(1024, Math.min(16000, tokens - 1024)) }
+          : { type: "adaptive", display: "summarized" };
+      }
+      if (cfg.effort && !old) {
+        out.output_config = { effort: cfg.effort };
+      }
+    } else if (cfg.provider === "openai" && cfg.effort) {
+      out.reasoning_effort = cfg.effort === "xhigh" || cfg.effort === "max" ? "high" : cfg.effort;
+    }
     return out;
   }
   const AGENT_RUN_MS = 10000;  // a run or an eval, at most
@@ -170,7 +198,7 @@
       };
     }
     const url = (cfg.url || AI_PROVIDERS[cfg.provider].url || "").replace(/\/+$/, "");
-    const model = cfg.compactor || (cfg.provider === "anthropic" ? "claude-haiku-4-5-20251001" : cfg.model || AI_PROVIDERS[cfg.provider].model || "");
+    const model = cfg.compactor || (cfg.provider === "anthropic" ? "claude-haiku-5-5" : cfg.model || AI_PROVIDERS[cfg.provider].model || "");
     return async (system, user) => {
       const t0 = performance.now();
       const anth = cfg.provider === "anthropic";
@@ -987,19 +1015,23 @@
     const url = (cfg.url || AI_PROVIDERS[cfg.provider].url || "").replace(/\/+$/, "");
     const model = cfg.model || AI_PROVIDERS[cfg.provider].model || "";
     if (cfg.provider === "anthropic") {
+      const tokens = agent_limits(cfg).tokens;
       const data = await agent_post(url + "/v1/messages", { "x-api-key": cfg.key, "anthropic-version": "2023-06-01",
-        "anthropic-dangerous-direct-browser-access": "true" }, { model, max_tokens: agent_limits(cfg).tokens,
+        "anthropic-dangerous-direct-browser-access": "true" }, Object.assign({ model, max_tokens: tokens,
         system: [{ type: "text", text: sys, cache_control: { type: "ephemeral" } }],
-        tools: tools.map((tl) => ({ name: tl.name, description: tl.description, input_schema: tl.schema })), messages: msgs });
+        tools: tools.map((tl) => ({ name: tl.name, description: tl.description, input_schema: tl.schema })), messages: msgs },
+        agent_reasoning(cfg, model, tokens)));
       const blocks = data.content || [];
       return { text: blocks.filter((b) => b.type === "text").map((b) => b.text).join("\n"), cut: data.stop_reason === "max_tokens",
+        think: blocks.filter((b) => b.type === "thinking" && b.thinking).map((b) => b.thinking).join("\n\n"),
         calls: blocks.filter((b) => b.type === "tool_use").map((b) => ({ id: b.id, name: b.name, input: b.input || {} })),
         said: { role: "assistant", content: blocks },
         answer: (rs) => [{ role: "user", content: rs.map((r) => ({ type: "tool_result", tool_use_id: r.id, content: r.text, is_error: !r.ok })) }] };
     }
     const data = await agent_post(url + "/v1/chat/completions", cfg.key ? { authorization: "Bearer " + cfg.key } : {},
-      { model, max_tokens: agent_limits(cfg).tokens, messages: [{ role: "system", content: sys }].concat(msgs),
-        tools: tools.map((tl) => ({ type: "function", function: { name: tl.name, description: tl.description, parameters: tl.schema } })) });
+      Object.assign({ model, max_tokens: agent_limits(cfg).tokens, messages: [{ role: "system", content: sys }].concat(msgs),
+        tools: tools.map((tl) => ({ type: "function", function: { name: tl.name, description: tl.description, parameters: tl.schema } })) },
+        agent_reasoning(cfg, model, agent_limits(cfg).tokens)));
     const m = ((data.choices || [])[0] || {}).message || {};
     const calls = (m.tool_calls || []).map((c) => {
       let input = {};
@@ -1049,7 +1081,10 @@
         throw e;
       }
       say.text = reply.text;
-      if (!reply.text.trim()) {
+      if (reply.think) {
+        say.think = reply.think;
+      }
+      if (!reply.text.trim() && !reply.think) {
         agent.log.splice(agent.log.indexOf(say), 1);
       } else {
         mem_log("agent", reply.text);
@@ -1835,6 +1870,8 @@
             card.append(cv_call(b.name, b.input));
           } else if (b.type === "tool_result") {
             card.append(answer(typeof b.content === "string" ? b.content : JSON.stringify(b.content), !b.is_error, conv.ids[b.tool_use_id]));
+          } else if (b.type === "thinking" || b.type === "redacted_thinking") {
+            card.append(fold(b.thinking ? t("ag_think") : t("cv_think_hidden"), () => cv_pre(b.thinking || t("cv_think_hidden_why"))));
           } else {
             card.append(cv_pre(b));
           }
@@ -2367,7 +2404,10 @@
 
   function agent_entry(e) {
     if (e.kind === "say") {
-      return el("div", { class: "ag-say", text: e.text.replace(/\n?STATUS:\s*\w+\s*$/i, "") || "…" });
+      const say = el("div", { class: "ag-say", text: e.text.replace(/\n?STATUS:\s*\w+\s*$/i, "") || (e.think ? "" : "…") });
+      // the model's reasoning, as its summary, folded above what it said
+      return e.think ? el("div", {}, el("details", { class: "ag-think" }, el("summary", { text: t("ag_think") }),
+        el("div", { class: "ag-think-text", text: e.think })), say) : say;
     }
     if (e.kind === "note") {
       return el("div", { class: "ag-note", text: e.text });

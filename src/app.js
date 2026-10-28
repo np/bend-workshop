@@ -133,7 +133,7 @@
   const AI_PROVIDERS = {
     none: { label: "—" },
     claude: { label: "Claude (claude.ai)" },
-    anthropic: { label: "Anthropic API", url: "https://api.anthropic.com", model: "claude-sonnet-4-6" },
+    anthropic: { label: "Anthropic API", url: "https://api.anthropic.com", model: "claude-opus-5-5" },
     openai: { label: "OpenAI API", url: "https://api.openai.com", model: "gpt-4.1" },
     custom: { label: "OpenAI-compatible URL", url: "http://localhost:11434", model: "" },
   };
@@ -6271,7 +6271,7 @@
             // the model that writes the memory's summaries: a cheap one
             const i = el("input", { type: "text", value: cfg.compactor || "", autocapitalize: "off", autocomplete: "off",
               autocorrect: "off", spellcheck: "false", "aria-label": t("ai_compactor"),
-              placeholder: cfg.provider === "anthropic" ? "claude-haiku-4-5-20251001" : cfg.model || AI_PROVIDERS[cfg.provider].model || "" });
+              placeholder: cfg.provider === "anthropic" ? "claude-haiku-5-5" : cfg.model || AI_PROVIDERS[cfg.provider].model || "" });
             i.addEventListener("input", () => {
               cfg.compactor = i.value.trim() || undefined;
               save();
@@ -6286,6 +6286,28 @@
             paint();
           } }))));
       limits.addEventListener("toggle", () => { lim_open = limits.open; });
+      // reasoning: Anthropic's adaptive thinking and an effort; OpenAI's effort
+      let reason = null;
+      if (cfg.provider === "anthropic" || cfg.provider === "openai") {
+        const sel = (opts, key) => {
+          const x = el("select", { class: "ai-sel", "aria-label": t("ai_" + key) });
+          for (const [v, label] of opts) {
+            x.append(el("option", { value: v, text: label }));
+          }
+          x.value = cfg[key] || "";
+          x.addEventListener("change", () => {
+            cfg[key] = x.value || undefined;
+            save();
+          });
+          return x;
+        };
+        const efforts = [["", t("ai_effort_default")]].concat(["low", "medium", "high", "xhigh", "max"].map((e) => [e, e]));
+        reason = el("div", { class: "ai-rows" },
+          cfg.provider === "anthropic" ? el("label", {}, t("ai_reasoning"),
+            sel([["", t("ai_reasoning_default")], ["adaptive", t("ai_reasoning_adaptive")]], "reasoning")) : null,
+          el("label", {}, t("ai_effort"), sel(efforts, "effort")),
+          el("small", { text: t(cfg.provider === "anthropic" ? "ai_reasoning_hint" : "ai_effort_hint_openai") }));
+      }
       const dup = el("button", { class: "btn", type: "button", text: t("duplicate"), onclick: () => {
         const p = { ...cfg, id: proj_id(), name: cfg.name + t("copy_suffix"), models: (cfg.models || []).slice(),
           limits: cfg.limits ? { ...cfg.limits } : undefined };
@@ -6313,6 +6335,7 @@
         el("label", {}, t("ai_model"), el("div", { class: "row" }, el("span", { class: "grow" }, list), claude ? null : again),
           claude ? null : model, status),
         claude ? null : el("label", {}, t("ai_key"), key),
+        reason,
         limits,
         el("div", { class: "row" }, dup, del)),
         el("small", { text: claude ? t("ai_hint_claude") : (viewer ? t("ai_hint_viewer") + " " : "") + t("ai_hint_key") }));

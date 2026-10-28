@@ -1519,3 +1519,5 @@ button.goal-name { text-decoration: underline; text-underline-offset: 3px; }
   --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
   --serif: "Iowan Old Style", "Palatino Linotype", Georgia, serif;
 }
+.ag-think > summary { cursor: pointer; font-size: 12px; color: var(--muted); }
+.ag-think-text { font-family: var(--serif); font-size: 14px; line-height: 1.45; color: var(--muted); white-space: pre-wrap; padding: 4px 0 4px 10px; border-left: 2px solid var(--line); }

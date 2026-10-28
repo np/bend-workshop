@@ -491,6 +491,20 @@ type), the goal after `⊢`, and a toolbar.
   as Ollama or LM Studio), a URL, a model and an optional key. Keys stay in
   localStorage and requests go straight from the browser. The single setting
   of before became the first profile.
+- **Reasoning** (a profile's setting). With Anthropic: *Reasoning*
+  (the model's default, or adaptive with its summaries shown:
+  `thinking: {type: "adaptive", display: "summarized"}`; models before 4.6
+  get `{type: "enabled", budget_tokens}` instead) and *Effort*
+  (`output_config.effort`, low to max). With OpenAI, the effort alone, as
+  `reasoning_effort`. Thinking counts against a reply's tokens, so the
+  reply's default room becomes 16,000 with it on. Thinking blocks go back
+  to the model unchanged within a turn's exchange, as the API requires; a
+  fresh conversation (from the memory) starts without them. The journal
+  shows a reply's reasoning summary folded above its text; the
+  conversation shows thinking blocks as folds ("not shown" when the model
+  hid them: the newest models think by default, summaries omitted). The
+  default model of a new Anthropic profile is `claude-opus-5-5`, and the
+  memory's summaries default to `claude-haiku-5-5`.
 - **Models.** The model is picked from the provider's own list (`/v1/models`,
   else `/api/tags`), or typed freely. For Claude, the list is the three
   `modelTier` values.
@@ -770,6 +784,8 @@ type), the goal after `⊢`, and a toolbar.
   quick tier past a small budget, the prompt cap, the Memory view, forget
   and Undo), `agent_memory_api` (Haiku summaries with a simulated
   Anthropic server, a long turn started again from the memory),
+  `agent_reasoning` (adaptive thinking and effort in the request, the
+  thinking block sent back unchanged, its summary in the journal),
   `agent_journal` (a reply without STATUS relaunched, the journal newest
   first with times, an entry unfolded into its events, the conversation's
   link back, the user's instructions in the prompt),
