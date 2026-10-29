@@ -1521,3 +1521,22 @@ button.goal-name { text-decoration: underline; text-underline-offset: 3px; }
 }
 .ag-think > summary { cursor: pointer; font-size: 12px; color: var(--muted); }
 .ag-think-text { font-family: var(--serif); font-size: 14px; line-height: 1.45; color: var(--muted); white-space: pre-wrap; padding: 4px 0 4px 10px; border-left: 2px solid var(--line); }
+
+/* Git */
+.git .row input { flex: 1; min-width: 0; }
+.git input { font: 14px var(--mono); padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); }
+.git-head { font-family: var(--mono); font-size: 13px; overflow-wrap: anywhere; margin: 0; }
+.git-note { color: var(--muted); font-size: 12.5px; margin: 0; min-height: 1em; }
+.git-changes, .git-branches { display: flex; flex-wrap: wrap; gap: 4px; }
+.git-changes .chip { font-family: var(--mono); font-size: 12px; }
+.git-new { color: var(--proof); }
+.git-gone { color: var(--fail); }
+.git-log { display: grid; }
+.git-commit { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 6px 8px; border-top: 1px solid var(--line); }
+.git-commit:first-child { border-top: 0; }
+.git-oid { font-family: var(--mono); font-size: 12px; color: var(--cobalt); }
+.git-what { flex: 1 1 12em; min-width: 0; overflow-wrap: anywhere; }
+.git-what small { color: var(--muted); }
+.git-rows { display: grid; gap: 10px; margin-top: 8px; }
+.git-rows label { font-size: 12.5px; display: grid; gap: 4px; }
+.git-rows input { font-size: 14px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); }

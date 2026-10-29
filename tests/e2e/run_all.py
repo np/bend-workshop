@@ -15,7 +15,7 @@ TESTS = [
     "goals_signatures", "kept_goals_tooltip", "heavy_demos", ("window_demos", "app_triangle_2d"), "window_mobile",
     "window_iframe_csp", "window_no_worker", "window_page_mode_mobile", "window_text", "projects_zip", "export_viewer", "no_storage",
     "languages", "sigs_marks_lawdef_ai", "split", "constructors", "solve_lazy", "verdict_bendtt", "split_narrow",
-    "split_disabled", "split_imported", "long_goals", "lemma", "lemma_mobile", "lemma_pong", "lemma_template", "rewrite", "copy_match", "find_comment", "project_versions", "todo_goals", "lawdef_pong", "network_audit", "fonts_off",
+    "split_disabled", "split_imported", "long_goals", "lemma", "lemma_mobile", "lemma_pong", "lemma_template", "rewrite", "copy_match", "find_comment", "project_versions", "todo_goals", "git", "lawdef_pong", "network_audit", "fonts_off",
     "hub", "operators", "ai_profiles", "agent_claude", "agent_apis", "agent_no_worker", "agent_holes_export",
     "agent_tools", "agent_trace", "agent_resume", "agent_memory", "agent_memory_api", "agent_journal", "agent_reasoning", "unii_handoff", "export_memory_page", "about_versions", "refactors", "portuguese", "opcalls", "timers_busy", "compiler_outputs",
 ]

@@ -11,4 +11,7 @@ esbuild core/entry.ts --bundle --format=iife --global-name=BendCore --platform=b
   --alias:node:crypto=./core/shim/crypto.ts --inject:./core/shim/globals.ts \
   '--define:import.meta.url="file:///bend/bend2/bend.ts"' '--define:import.meta.require=undefined' \
   --log-level=warning --outfile=dist/bend-core.js
-ls -la dist/bend-core.js
+# git (isomorphic-git), bundled apart: the page carries it compressed
+esbuild core/git/entry.js --bundle --format=iife --global-name=BendGit --platform=browser --target=es2020 $1 \
+  --log-level=warning --outfile=dist/bend-git.js
+ls -la dist/bend-core.js dist/bend-git.js

@@ -1454,10 +1454,11 @@
     if (ses.db === null) {
       ses.db = new Promise((done) => {
         try {
-          // 1: the past sessions; 2: the agent's memory, a chat per project
-          const req = indexedDB.open("bend-workshop", 2);
+          // 1: the past sessions; 2: the agent's memory, a chat per project;
+          // 3: a git repository per project
+          const req = indexedDB.open("bend-workshop", 3);
           req.onupgradeneeded = () => {
-            for (const name of ["sessions", "chats"]) {
+            for (const name of ["sessions", "chats", "git"]) {
               if (!req.result.objectStoreNames.contains(name)) {
                 req.result.createObjectStore(name, { keyPath: "id" });
               }

@@ -111,13 +111,16 @@ const fonts = font("Workshop Mono", "JetBrainsMono-latin.woff2", "normal", "400 
   + font("Workshop Serif", "SourceSerif4-Italic-latin.woff2", "italic", "400 600");
 
 const cfx = zlib.deflateRawSync(Buffer.from(read("gen/c_effects.json")), { level: 9 }).toString("base64");
-const fill = { STYLE: fonts + read("src/style.css"), GUIDE: guide, EXAMPLES: examples, PRELUDE: prelude, CEFFS: cfx,
+// git, unpacked on its first use (DecompressionStream), as the C sources
+const gitz = zlib.deflateRawSync(fs.readFileSync("dist/bend-git.js"), { level: 9 }).toString("base64");
+const fill = { GITZ: gitz, STYLE: fonts + read("src/style.css"), GUIDE: guide, EXAMPLES: examples, PRELUDE: prelude, CEFFS: cfx,
   I18N: read("src/i18n.js"), GUIDEMD: read("../bend/guide/GUIDE.md").replace(/<\/script/gi, "<\\/script"),
   RUNTAIL: read("src/runner-tail.js"),
   CORE: core, APP: read("src/app.js").replace("/*__OPCALL__*/", () => read("src/opcall.js"))
     .replace("/*__MOVES__*/", () => read("src/moves.js"))
     .replace("/*__MEMORY__*/", () => read("src/memory.js"))
-    .replace("/*__AGENT__*/", () => read("src/agent.js")) };
+    .replace("/*__AGENT__*/", () => read("src/agent.js"))
+    .replace("/*__GIT__*/", () => read("src/git.js")) };
 let html = read("src/index.template.html");
 for (const [k, v] of Object.entries(fill)) {
   html = html.replace("/*__" + k + "__*/", () => v);

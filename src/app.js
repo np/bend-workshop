@@ -213,7 +213,7 @@
 
   function store_main() {
     ls_set(LS_MAIN, { current: state.id, order: [state.id].concat(store.others.map((p) => p.id)),
-      live: state.live, size: state.size, lang, ai: state.ai, fonts: state.fonts });
+      live: state.live, size: state.size, lang, ai: state.ai, fonts: state.fonts, git: state.git });
   }
 
   // The browser's language when the page speaks it, else English.
@@ -233,6 +233,7 @@
     const main = ls_get(LS_MAIN);
     lang = main && LANGS[main.lang] ? main.lang : lang_guess();
     state.fonts = !(main && main.fonts === false);
+    state.git = main && main.git && typeof main.git === "object" ? main.git : {};
     if (main && main.ai && typeof main.ai === "object") {
       state.ai.instructions = typeof main.ai.instructions === "string" ? main.ai.instructions : "";
       if (Array.isArray(main.ai.profiles)) {
@@ -5296,7 +5297,19 @@
     ls_del(LS_PROJ + id);
     ls_del(LS_SNAP + id);
     store_main();
+    // its repository too, kept in memory for Undo
+    const repo = git_fs(id).then((fs) => {
+      gitst.fs.set(id, null);
+      git_flush(id);
+      return fs;
+    });
     toast(t("proj_deleted", gone.name), t("undo"), () => {
+      repo.then((fs) => {
+        if (fs) {
+          gitst.fs.set(id, fs);
+          git_save(id);
+        }
+      });
       store.others.splice(i, 0, gone);
       ls_set(LS_PROJ + id, gone);
       if (snaps) {
@@ -5355,7 +5368,7 @@
     let at = 0;
     for (const f of files) {
       const name = enc.encode(folder + "/" + f.name);
-      const data = enc.encode(f.text);
+      const data = f.data instanceof Uint8Array ? f.data : enc.encode(f.text);
       const crc = crc32(data);
       const head = new DataView(new ArrayBuffer(30));
       head.setUint32(0, 0x04034b50, true);
@@ -5408,9 +5421,10 @@
     }
     const count = v.getUint16(end + 10, true);
     const dec = new TextDecoder("utf-8");
+    const git_entries = [];
     const out = [];
     let at = v.getUint32(end + 16, true);
-    for (let n = 0; n < count && n < 400; n++) {
+    for (let n = 0; n < count && n < 20000; n++) {
       if (v.getUint32(at, true) !== 0x02014b50) {
         break;
       }
@@ -5423,8 +5437,10 @@
       const name = dec.decode(new Uint8Array(buf, at + 46, nlen));
       at += 46 + nlen + xlen + clen;
       const memo = !all && /(^|\/)\.workshop\/(agent-memory|project)\.json$/.test(name);
+      // a repository's .git, kept as bytes
+      const dotgit = !all && /(^|\/)\.git\//.test(name);
       if (name.endsWith("/") || name.startsWith("__MACOSX/") || (csize > 4e6 && !memo)
-        || (all ? /\.(png|jpe?g|gif|zip|gz|wasm|bin|o|a|so|dylib|exe)$/i.test(name) : !/\.(bend|js)$/.test(name) && !memo)) {
+        || (all ? /\.(png|jpe?g|gif|zip|gz|wasm|bin|o|a|so|dylib|exe)$/i.test(name) : !/\.(bend|js)$/.test(name) && !memo && !dotgit)) {
         continue;
       }
       const from = local + 30 + v.getUint16(local + 26, true) + v.getUint16(local + 28, true);
@@ -5439,7 +5455,11 @@
       } else if (method !== 0) {
         continue;
       }
-      out.push({ name, text: dec.decode(bytes) });
+      if (dotgit) {
+        git_entries.push({ name, data: bytes.slice() });
+      } else {
+        out.push({ name, text: dec.decode(bytes) });
+      }
     }
     if (all) {
       return { folder: "", files: out };
@@ -5458,7 +5478,7 @@
     // a single top folder is the project's own: its files are the project
     const top = out.length > 0 && out.every((f) => f.name.includes("/")) ? out[0].name.split("/")[0] + "/" : "";
     const flat = top !== "" && out.every((f) => f.name.startsWith(top));
-    return { folder: flat ? top.slice(0, -1) : "", memory, meta,
+    return { folder: flat ? top.slice(0, -1) : "", memory, meta, git: git_entries,
       files: out.map((f) => ({ name: flat ? f.name.slice(top.length) : f.name, text: f.text })) };
   }
 
@@ -5513,7 +5533,7 @@
         await save_file(stem + ".json", JSON.stringify({ bend_project: 1, id: state.id, name: state.name, files: state.files,
           memory: memo || undefined }, null, 1));
       } else {
-        const extra = [proj_meta()].concat(memo ? [{ name: MEM_ZIP, text: JSON.stringify(memo) }] : []);
+        const extra = [proj_meta()].concat(memo ? [{ name: MEM_ZIP, text: JSON.stringify(memo) }] : [], await git_zip_files(state.id));
         await save_file(stem + ".zip", zip_make(state.files.concat(extra), stem));
       }
     } catch (e) {
@@ -5555,6 +5575,7 @@
     let want = "";
     let memo = null;
     let pid = null;
+    let dotgit = null;
     const mem_take = (x) => {
       try {
         const m = typeof x === "string" ? JSON.parse(x) : x;
@@ -5578,6 +5599,9 @@
           files = files.concat(got.files);
           if (got.memory) {
             mem_take(got.memory);
+          }
+          if (got.git.length > 0 && list.length === 1) {
+            dotgit = got.git;
           }
           if (got.meta && typeof got.meta.id === "string" && list.length === 1) {
             pid = got.meta.id;
@@ -5624,9 +5648,15 @@
         proj_switch(pid);
       }
       await proj_version(files, memo);
+      if (dotgit) {
+        git_from_zip(state.id, dotgit, state.files);
+      }
       return;
     }
     proj_new(want || t("import_name"), files, false, undefined, pid);
+    if (dotgit) {
+      git_from_zip(state.id, dotgit, state.files);
+    }
     if (memo) {
       mem_store.cache.set(state.id, memo);
       mem_flush(state.id);
@@ -5812,32 +5842,43 @@
     const out = el("div", { class: "diffs" });
     const paint = () => {
       out.textContent = "";
-      const fa = new Map(a.files);
-      const fb = new Map(b.files);
-      const names = [...new Set([...fa.keys(), ...fb.keys()])];
-      let any = false;
-      for (const name of names) {
-        const x = fa.has(name) ? fa.get(name) : null;
-        const y = fb.has(name) ? fb.get(name) : null;
-        if (x === y) {
-          continue;
-        }
-        any = true;
-        const ops = diff_lines(x === null ? "" : x, y === null ? "" : y);
-        const plus = ops.filter(([k]) => k === "+").length;
-        const minus = ops.filter(([k]) => k === "-").length;
-        out.append(el("details", { class: "diff-file", open: true },
-          el("summary", { text: name + (x === null ? t("diff_new") : y === null ? t("diff_gone") : "") + "  −" + minus + " +" + plus }),
-          diff_view(ops)));
-      }
-      if (!any) {
-        out.append(el("p", { class: "empty", text: t("diff_same") }));
-      }
+      out.append(diffs_view(a.files, b.files));
     };
     paint();
     sheet_open(t("snap_compare_title"), el("div", { class: "form" },
       el("div", { class: "agent-grid" }, el("label", {}, t("diff_from"), pick(a, (x) => { a = x; })),
         el("label", {}, t("diff_to"), pick(b, (x) => { b = x; }))), out));
+  }
+
+  // Two versions' files ([name, text] each), file by file.
+  function diffs_view(af, bf) {
+    const out = document.createDocumentFragment();
+    const fa = new Map(af);
+    const fb = new Map(bf);
+    let any = false;
+    for (const name of new Set([...fa.keys(), ...fb.keys()])) {
+      const x = fa.has(name) ? fa.get(name) : null;
+      const y = fb.has(name) ? fb.get(name) : null;
+      if (x === y) {
+        continue;
+      }
+      any = true;
+      const ops = diff_lines(x === null ? "" : x, y === null ? "" : y);
+      const plus = ops.filter(([k]) => k === "+").length;
+      const minus = ops.filter(([k]) => k === "-").length;
+      out.append(el("details", { class: "diff-file", open: true },
+        el("summary", { text: name + (x === null ? t("diff_new") : y === null ? t("diff_gone") : "") + "  −" + minus + " +" + plus }),
+        diff_view(ops)));
+    }
+    if (!any) {
+      out.append(el("p", { class: "empty", text: t("diff_same") }));
+    }
+    return out;
+  }
+
+  // A diff of two sets of files in a sheet of its own (a commit and its parent).
+  function diff_sheet(title, af, bf) {
+    sheet_open(title, el("div", { class: "form" }, el("div", { class: "diffs" }, diffs_view(af, bf))));
   }
 
   function projects_sheet() {
@@ -5902,7 +5943,8 @@
         el("button", { class: "btn", type: "button", text: t("snapshot"), onclick: () => {
           toast(snap_take("snap_manual", true) ? t("snap_taken") : t("snap_same"));
           again();
-        } })),
+        } }),
+        el("button", { class: "btn", type: "button", text: t("git_btn"), onclick: () => { close(); git_sheet(); } })),
       el("details", { class: "hist" },
         el("summary", { text: t("history", store.snaps.length) }),
         store.snaps.length === 0 ? el("small", { text: t("history_hint") }) : hist));
@@ -6053,6 +6095,7 @@
       el("div", { class: "field" }, el("span", { text: t("language") }), langs),
       fonts_setting(),
       ai_settings(),
+      git_settings(),
       el("label", {}, t("args_label"), args, el("small", { text: t("args_hint") })),
       el("label", { class: "check" }, livebox,
         el("span", {}, t("live_label"), el("br"), el("small", { text: t("live_hint") }))),
@@ -6483,6 +6526,7 @@
 /*__MOVES__*/
 /*__MEMORY__*/
 /*__AGENT__*/
+/*__GIT__*/
   // Init
   // ====
 

@@ -10,7 +10,7 @@ with sync_playwright() as p:
     page.goto("http://localhost:8123/index.html")
     page.wait_for_selector("#verdict[data-state=ok]", timeout=30000)
     page.click("#btn-settings"); time.sleep(0.3); page.screenshot(path=shot("shot_s1.png"))
-    page.fill(".form input[type=text]", "alice 42")
+    page.locator(".form label", has=page.locator("small")).filter(has_text="arguments").first.locator("input[type=text]").fill("alice 42")
     page.click("text=A+"); page.click("text=A+")
     page.click(".sheet-head button")
     # args example

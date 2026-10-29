@@ -49,8 +49,9 @@ These shape every feature. Break one only with a reason written down here.
 8. **No telemetry.** The page makes no request by itself: its fonts are
    inside it. Only where a host refuses inline fonts (claude.ai's viewer)
    does it ask Google Fonts for them, and Settings turns that off. Anything
-   else is user-triggered: a hub import, the assistant, the user's own
-   programs.
+   else is user-triggered: a hub import, the assistant, a git clone, pull
+   or push (to the host, or through the user's own CORS proxy), the user's
+   own programs.
 9. **English by default, French too.** Every interface string lives in
    `src/i18n.js`. Compiler messages, the guide and example code stay in English.
 
@@ -63,6 +64,7 @@ third_party/  UniiChat/ (its license, and what memory.js adapts from it),
 .github/      workflows/pages.yml (build, test, publish), dependabot.yml
 scripts/      gen_assets.mjs, gen_examples.mjs, build_html.mjs
 core/         entry.ts, shim/        (the bundle around Bend)
+              git/                  (the git bundle: isomorphic-git)
 src/          the page
 ex/           example programs written for the page
 tests/node/   unit tests (npm test)
@@ -77,12 +79,13 @@ tests/e2e/shots/, tests/e2e/fixtures/fakehub/  what the tests write (ignored)
 | `core/shim/` | `node:fs` in memory, `node:path` (POSIX), `os`, `url`, `child_process` and `crypto` stubs, `process`/`Buffer` globals |
 | `scripts/gen_assets.mjs` | Writes `gen/assets.ts` (`base.bend`, the effects' `.js`, the operator table read from `bend.ts`, version and commit) and `gen/c_effects.json` (the effects' `.c`/`.h`, for the C output only) |
 | `scripts/gen_examples.mjs` | Writes `gen/examples.json`: guide snippets, demos and `ex/` files, titles, notes and groups in every language |
-| `build.sh` | esbuild → `dist/bend-core.js` (IIFE global `BendCore`) |
-| `scripts/build_html.mjs` | Inlines the fonts (`third_party/fonts`, as data URLs, named *Workshop Mono* and *Workshop Serif*, being subsets), renders `GUIDE.md`, compresses `gen/c_effects.json` (deflate-raw, base64), splices `opcall.js`, `moves.js`, `memory.js` and `agent.js` into `app.js`, fills `src/index.template.html` → `dist/index.html` |
+| `build.sh` | esbuild → `dist/bend-core.js` (IIFE global `BendCore`), and `dist/bend-git.js` (global `BendGit`: isomorphic-git, its web HTTP client, and the `buffer` package as the global `Buffer` it expects) |
+| `scripts/build_html.mjs` | Inlines the fonts (`third_party/fonts`, as data URLs, named *Workshop Mono* and *Workshop Serif*, being subsets), renders `GUIDE.md`, compresses `gen/c_effects.json` and `dist/bend-git.js` (deflate-raw, base64), splices `opcall.js`, `moves.js`, `memory.js`, `agent.js` and `git.js` into `app.js`, fills `src/index.template.html` → `dist/index.html` |
 | `src/app.js` | The whole interface, one IIFE, sectioned by `// Name` headers |
 | `src/opcall.js` | Operators ⇄ calls: the infix table's climbing, the namespace walk, printing with the fewest parentheses; spliced at `/*__OPCALL__*/` |
 | `src/moves.js` | Rename and move: the name scan, the plans (pure, tested in Node), the check before writing, their sheets; spliced at `/*__MOVES__*/` |
 | `src/memory.js` | The agent's memory, adapted from UniiChat: the chat, its tree of one-line summaries, the view and its merges, zoom, search, IndexedDB; spliced at `/*__MEMORY__*/` |
+| `src/git.js` | Git: the page's file system for it (`gitfs_new`), the working tree ⇄ the project, commit, log, branches, checkout, clone, pull, push, the .git of a zip, the Git sheet and settings; spliced at `/*__GIT__*/` |
 | `src/agent.js` | The agent mode: tools, locks, the two loops, the trace, past sessions, its pane; spliced at `/*__AGENT__*/` |
 | `src/i18n.js` | `window.BEND_LANGS = { en, fr, pt }`; values are strings or functions |
 | `src/index.template.html` | The page's markup, with one About per language (`about-en`, `about-fr`, `about-pt`) |
@@ -90,8 +93,8 @@ tests/e2e/shots/, tests/e2e/fixtures/fakehub/  what the tests write (ignored)
 | `src/runner-prelude.js` | The host a compiled program expects (process, `require("fs")`, `BEND_SYS`), plus the Window display loop |
 | `src/runner-tail.js` | Appended after a compiled program that opens a Window: replaces `io_exit` and the `Window.*` effects |
 | `ex/` | Programs written for the page: FizzBuzz, a JS foreign effect, the bounty |
-| `tests/node/` | `examples`, `guide`, `opcall`, `moves`, `memory`, `i18n` (in `npm test`); `core` (a quick look at the bundle); `run` (the harness the others share) |
-| `tests/e2e/` | One Playwright script per feature, named for it; `serve.py` serves `dist/` with an optional CSP and gives `shot()` and `fixture()`; `run_all.py` runs them |
+| `tests/node/` | `examples`, `guide`, `opcall`, `moves`, `memory`, `git`, `i18n` (in `npm test`); `core` (a quick look at the bundle); `run` (the harness the others share) |
+| `tests/e2e/` | One Playwright script per feature, named for it; `serve.py` serves `dist/` with an optional CSP and gives `shot()` and `fixture()`; `git_server.py` serves bare repositories through `git http-backend` (with or without CORS, a login for pushes) and a CORS proxy; `run_all.py` runs them |
 
 `../bend` must be a clone of bendlang/bend at the commit in `BEND_COMMIT`
 (the full hash): `core/entry.ts`, the scripts and the tests read it there.
@@ -465,6 +468,41 @@ type), the goal after `⊢`, and a toolbar.
 - **While the agent works** no other project can open (an example, a guide
   snippet, an import, a switch): the agent writes to the open one.
 
+## Git
+
+- **A repository per project**, kept in this browser (Projects, *Git…*;
+  isomorphic-git, MIT). Its working tree is the project's files, the
+  `.bend` and `.js` ones; other files of a clone (a README) stay in the
+  tree untouched and are committed as they are. The tree and `.git` live
+  in a file system of the page's own (`gitfs_new`: files and folders in
+  memory, as isomorphic-git asks for `fs.promises`), saved whole in
+  IndexedDB (store `git`, by project id). The library is carried in the
+  page compressed (about 110 KB) and unpacked on first use, as the C
+  sources are.
+- **Local.** *Create a repository* (branch `main`), the changes since the
+  last commit (new, changed, gone), *Commit* with a message (the author
+  from Settings, else "Bend workshop"), the last 50 commits, each with
+  *Diff* (against its parent, in the history's diff view) and *Check out*;
+  branches (*Create and switch*, a tap to switch). A checkout writes the
+  files over the project's after a snapshot ("before a git checkout or
+  pull"), with Undo (which gives the files back, not HEAD).
+- **The zip.** An export carries `.git` as well (binary entries), so the
+  unzipped folder is a repository the git CLI reads; an imported zip with
+  a `.git` brings the repository back, for a new project or a new version.
+  A project deleted takes its repository along, Undo brings both back.
+- **Remotes.** One remote, `origin`, its URL in the sheet; *Clone* (into a
+  new project; one branch, the last 50 commits), *Pull* (fast-forward; the
+  changes must be committed first), *Push* (the current branch). A page
+  may only reach a host that allows it (CORS): Gitea, Gogs, Azure DevOps.
+  GitHub, GitLab and Bitbucket allow no page, so their remotes go through
+  a CORS proxy the user sets in Settings, *Git* (their own:
+  `@isomorphic-git/cors-proxy`, a Cloudflare worker); the page offers none,
+  since everything sent, credentials included, crosses it. Credentials are
+  kept per host (user name, token or password) in localStorage like the AI
+  keys, sent only to that host (through the proxy, if set); GitHub takes a
+  personal access token with any user name. Errors show in the sheet
+  (`HTTP 401`, a refused fast-forward, a CORS refusal).
+
 ## Hub
 
 - **Paths.** Imports read `0x<hash>/path.bend` or `name@version/path.bend`.
@@ -749,7 +787,9 @@ type), the goal after `⊢`, and a toolbar.
   and their round trips. `memory.mjs` checks the memory: names, lines, the
   view under its budget and merging to half, growing only at its end
   between merges, covering the chat in order, each node asked once, zoom,
-  search, a compactor too long or failing. `moves.mjs` renames and moves in a small project
+  search, a compactor too long or failing. `git.mjs` runs isomorphic-git
+  over the page's file system: status, commits, log, a branch, checkout,
+  the files of a commit, a dump restored. `moves.mjs` renames and moves in a small project
   and checks the result with Bend's checker, and the refusals (cycle, name
   taken, bad name). `i18n.mjs` checks the languages against English.
 - **Playwright** (`npm run e2e`, from the repo root, after a build). Each
@@ -774,7 +814,10 @@ type), the goal after `⊢`, and a toolbar.
   id kept), `todo_goals` (`?TODO` cards, no snippet during the agent), `lawdef_pong`, `operators`, `opcalls`,
   `sigs_marks_lawdef_ai`, `refactors` (caret per file across a reload, an
   imported type's constructors, rename, move, a cycle refused). Outputs: `verdict_bendtt`, `compiler_outputs`,
-  `heavy_demos`. Hub: `hub` (a fake package with real hashes, from
+  `heavy_demos`. Git: `git` (a repository, commits, a diff, checkout and
+  Undo, a branch; `.git` in the zip, read by the git CLI, and back; clone,
+  a push refused then logged in, pull, from `git_server.py`; a host
+  refusing pages, through a proxy). Hub: `hub` (a fake package with real hashes, from
   `fixtures/make_fakehub.py`). About: `about_versions` (the versions card, its links, the copy).
   Assistant and agent: `ai_profiles`,
   `agent_claude` (a scripted Claude: hole mode, close option, sub-holes, locks,
