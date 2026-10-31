@@ -690,6 +690,18 @@ type), the goal after `⊢`, and a toolbar.
   session* restores the snapshot. Agent writes go straight to the text, not
   through the browser's undo stack, so no keyboard opens on a phone; the
   snapshot stands for undo.
+- **Kept awake** (experimental, off by default, a session's setting). A
+  phone freezes a page it no longer shows, unless it plays sound. With
+  *Keep running when the page is hidden*, the tap that starts (or
+  continues) the session also starts a looping sound too faint to hear:
+  a WAV made on the spot, noise of ±1 in 32767, since Chrome exempts only
+  a tab whose sound it can measure, not true silence. The media session
+  names it ("Bend agent at work"), and its Stop and Pause stop the agent;
+  while the page is shown, a screen wake lock keeps the screen on. The
+  agent's head shows "kept awake"; all of it stops when the session ends.
+  If the browser refuses to play, a message says the page may freeze.
+  Whether it holds on a given phone and browser was never tested on a
+  real device.
 - **Taking a session up again** (by hand). A session that ended (an error, a stop,
   the agent done or blocked, the API out of breath) can be continued from
   the tab: under its journal, the same settings as a new session (what it
@@ -853,6 +865,8 @@ type), the goal after `⊢`, and a toolbar.
   Anthropic server, a long turn started again from the memory),
   `agent_reasoning` (adaptive thinking and effort in the request, the
   thinking block sent back unchanged, its summary in the journal),
+  `agent_keep` (the faint sound and media session during a session, off
+  by default, stopped at the end),
   `agent_journal` (a reply without STATUS relaunched, the journal newest
   first with times, an entry unfolded into its events, the conversation's
   link back, the user's instructions in the prompt),

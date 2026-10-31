@@ -21,7 +21,7 @@
     log: [], ctl: null, queue: Promise.resolve(), mode: "project", holes: [], close: false,
     entry: "", task: "", before: null, done: false, last: "", raf: 0,
     trace: [], t0: 0, wall: 0, notes: [], ended: "", note_draft: "", lim: null, mem: null, shrink: null,
-    auto: true, status: "", open: new Set(),
+    auto: true, status: "", open: new Set(), keep: false,
   };
 
   // Everything said and done in a session, for whoever debugs it: what the
@@ -1152,6 +1152,110 @@
     agent.size = Math.max(1, Number(($("#agent-budget") || { value: agent.size }).value) || 20);
   }
 
+  // Kept awake
+  // ----------
+  // A phone freezes a page it no longer shows, except one playing sound.
+  // With the session's "keep running" setting, a sound too faint to hear
+  // (noise of ±1 in 32767, not silence: Chrome exempts only a tab whose
+  // sound it can measure) loops while the agent works; Android shows it
+  // as media, with Stop. While the page is shown, a wake lock keeps the
+  // screen on. All of it starts on the tap that starts the session, as
+  // browsers require, and stops when the session ends.
+  const keep = { audio: null, lock: null, url: null };
+
+  function keep_wav() {
+    if (keep.url !== null) {
+      return keep.url;
+    }
+    const rate = 8000;
+    const n = rate;
+    const buf = new DataView(new ArrayBuffer(44 + n * 2));
+    const str = (at, x) => [...x].forEach((ch, i) => buf.setUint8(at + i, ch.charCodeAt(0)));
+    str(0, "RIFF");
+    buf.setUint32(4, 36 + n * 2, true);
+    str(8, "WAVEfmt ");
+    buf.setUint32(16, 16, true);
+    buf.setUint16(20, 1, true);
+    buf.setUint16(22, 1, true);
+    buf.setUint32(24, rate, true);
+    buf.setUint32(28, rate * 2, true);
+    buf.setUint16(32, 2, true);
+    buf.setUint16(34, 16, true);
+    str(36, "data");
+    buf.setUint32(40, n * 2, true);
+    for (let i = 0; i < n; i++) {
+      buf.setInt16(44 + i * 2, i % 2 === 0 ? 1 : -1, true);
+    }
+    let bin = "";
+    const bytes = new Uint8Array(buf.buffer);
+    for (let i = 0; i < bytes.length; i += 8192) {
+      bin += String.fromCharCode(...bytes.subarray(i, i + 8192));
+    }
+    keep.url = "data:audio/wav;base64," + btoa(bin);
+    return keep.url;
+  }
+
+  async function keep_lock() {
+    if (keep.audio !== null && document.visibilityState === "visible" && navigator.wakeLock && keep.lock === null) {
+      try {
+        keep.lock = await navigator.wakeLock.request("screen");
+        keep.lock.addEventListener("release", () => { keep.lock = null; });
+      } catch (e) {
+        keep.lock = null;
+      }
+    }
+  }
+
+  document.addEventListener("visibilitychange", keep_lock);
+
+  // Called on the tap itself, before anything awaits.
+  function keep_on() {
+    if (!agent.keep || keep.audio !== null) {
+      return;
+    }
+    try {
+      const a = new Audio(keep_wav());
+      a.loop = true;
+      keep.audio = a;
+      a.play().catch(() => {
+        toast(t("keep_refused"));
+        keep_off();
+      });
+      if ("mediaSession" in navigator) {
+        navigator.mediaSession.metadata = new MediaMetadata({ title: t("keep_title"), artist: "Bend workshop" });
+        for (const act of ["stop", "pause"]) {
+          try {
+            navigator.mediaSession.setActionHandler(act, () => agent_stop());
+          } catch (e) {}
+        }
+      }
+    } catch (e) {
+      keep.audio = null;
+    }
+    keep_lock();
+    agent_paint_soon();
+  }
+
+  function keep_off() {
+    if (keep.audio !== null) {
+      keep.audio.pause();
+      keep.audio.removeAttribute("src");
+      keep.audio = null;
+    }
+    if (keep.lock !== null) {
+      keep.lock.release().catch(() => {});
+      keep.lock = null;
+    }
+    if ("mediaSession" in navigator) {
+      navigator.mediaSession.metadata = null;
+      for (const act of ["stop", "pause"]) {
+        try {
+          navigator.mediaSession.setActionHandler(act, null);
+        } catch (e) {}
+      }
+    }
+  }
+
   async function agent_start() {
     if (agent.running) {
       return;
@@ -1160,6 +1264,7 @@
     if (cfg === null) {
       return;
     }
+    keep_on();
     const task = ($("#agent-task") || { value: "" }).value.trim();
     agent.task = task || (agent.mode === "holes" ? t("agent_task_holes", agent.holes.map((h) => "?" + h).join(", "))
       : t("agent_task_default"));
@@ -1191,6 +1296,7 @@
     if (cfg === null) {
       return;
     }
+    keep_on();
     const note = ($("#agent-note") || { value: "" }).value.trim();
     if (note !== "") {
       agent.notes.push(note);
@@ -1249,6 +1355,7 @@
       trace("error", { code: e && e.code, message: (e && e.message) || String(e) });
     } finally {
       agent.running = false;
+      keep_off();
       if (agent.paused) {
         agent.paused(false);
       }
@@ -2166,6 +2273,9 @@
           onclick: () => agent.paused && agent.paused(true) }));
       }
       head.append(el("button", { class: "btn danger", type: "button", text: t("stop"), onclick: agent_stop }));
+      if (keep.audio !== null) {
+        head.prepend(el("span", { class: "agent-awake", title: t("agent_keep"), text: "🔈 " + t("keep_on") }));
+      }
       box.append(head);
       if (typeof agent.shrink === "number") {
         const pc = Math.round(agent.shrink * 100);
@@ -2442,6 +2552,9 @@
       store_main();
     });
     const budget = el("input", { id: "agent-budget", type: "number", min: "1", max: "500", value: String(agent.size) });
+    const awake = el("input", { type: "checkbox", id: "agent-keep" });
+    awake.checked = agent.keep;
+    awake.addEventListener("change", () => { agent.keep = awake.checked; });
     const auto = el("input", { type: "checkbox", id: "agent-auto" });
     auto.checked = agent.auto;
     auto.addEventListener("change", () => { agent.auto = auto.checked; });
@@ -2450,6 +2563,7 @@
       el("label", {}, t("ai_profile"), prof),
       el("label", {}, t("agent_budget"), budget)),
       el("label", { class: "check auto" }, auto, el("span", {}, t("agent_auto"), el("br"), el("small", { text: t("agent_auto_hint") }))),
+      el("label", { class: "check keep" }, awake, el("span", {}, t("agent_keep"), el("br"), el("small", { text: t("agent_keep_hint") }))),
       resume
         ? el("div", { class: "row agent-end" },
           el("button", { class: "btn primary", type: "button", text: t("agent_resume"), onclick: agent_resume }),
