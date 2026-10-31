@@ -292,6 +292,9 @@ type), the goal after `⊢`, and a toolbar.
   per line; `->` and `&` break too. Nothing is cut inside a name. Past 8 lines
   a goal folds to 5 with "+N lines"; a tap unfolds it, and hover shows it whole
   in a floating block. The Output pane uses the same layout.
+- **Repaints.** Checks and probes repaint the list; it keeps its scroll and
+  the field being typed in (its text and caret), and brings the card near
+  the caret into view only when the caret moves to another one.
 - **Kept cards.** When a hole is replaced, its card stays ("hole replaced, goal
   kept") until the checker gets past the declaration it was in. *Pin* keeps a
   card beyond that. The card for the declaration under the caret is marked and
@@ -303,7 +306,11 @@ type), the goal after `⊢`, and a toolbar.
   file's import (a project file or a hub module) and written with the alias
   (`ctors_for`, which Split uses too). Every candidate is tried in the checker in
   place of the hole. When exactly one fits and leaves no hole, the button reads
-  *Solve* and fills the hole directly. Trying runs by itself after a check when
+  *Solve* and fills the hole directly. When the file fails already, a
+  candidate leaving the same error fits only if that error lies past the
+  hole's declaration: one before it, or in it (a parameter consumed twice),
+  may stop the checker before the hole, and then anything would look as
+  good. Trying runs by itself after a check when
   the file checks in under 400 ms, at most 24 tries per pass, nearest card
   first. Otherwise the button is dashed (`Constructors…`) and tries on a tap.
 - **Split.** Tick variables, then *Match*: one `match a b:` over the product of
@@ -325,16 +332,22 @@ type), the goal after `⊢`, and a toolbar.
   so the card follows it. A template parameter `~f` of the enclosing def,
   which goals print as `def~f`, becomes the lemma's own first parameter,
   typed as the def's header types it, and the call passes `~f`.
-- **Rewrite** (an equality goal, the hole alone on its line). Type an
-  equality `e` (a hypothesis, a lemma's call; the context's equalities are
-  chips), *Find*: its type `{a == b : T}` comes from the checker (a copy
-  where the hole is `__eq = e` then the hole), then each place of the goal
-  where `b` stands gives `%e : P` (`P` the goal with `_` there) and each place
-  of `a` gives `%Equal.sym(T, a, b, e) : P`. Each is checked first and shown
-  with the goal it leaves, greyed with the checker's reason when it fails;
-  one that leaves both sides equal is marked `{==}` and, tapped, written with
-  `{==}` in place of the hole. This replaces the `#goal:` → hand-written `%`
-  → `_` loop.
+- **Rewrite** (any goal, equality or not). Type an equality `e` (a
+  hypothesis, a lemma's call; the context's equalities are chips), *Find*:
+  its type `{a == b : T}` comes from the checker (a copy where the hole is
+  `__eq = e` then the hole), then each place of the goal where `b` stands
+  gives `%e : P` (`P` the goal with `_` there), grouped as *right side
+  found*, and each place of `a` gives `%Equal.sym(T, a, b, e) : P`, grouped
+  as *left side found, with Equal.sym*. Terms are matched eta-contracted
+  (`a => b => Nat.add(a, b)` is `Nat.add`), since the goal and the equality
+  may print a function either way and the checker compares up to eta. Each
+  is checked first and shown with the goal it leaves, greyed with the
+  checker's reason when it fails; one that leaves an equality's sides equal
+  is marked `{==}` and, tapped, written with `{==}` in place of the hole. A
+  hole alone on its line takes the rewrite as a statement above it; a hole
+  inside an expression (an argument, a pair) takes it inline,
+  `(%e : P; ?hole)`, as Bend reads a rewrite anywhere a term goes. This
+  replaces the `#goal:` → hand-written `%` → `_` loop.
 - **AI.** See *Assistant* below.
 - **Law ⇄ def** (from a signature's sheet). It splits a typed def into
   `law` + an untyped `def`, with the claim laid out, or merges them back. It is
@@ -480,7 +493,8 @@ type), the goal after `⊢`, and a toolbar.
   page compressed (about 110 KB) and unpacked on first use, as the C
   sources are.
 - **Local.** *Create a repository* (branch `main`), the changes since the
-  last commit (new, changed, gone), *Commit* with a message (the author
+  last commit (new, changed, gone; each opens its diff against the last
+  commit, *Review all* every one, before committing), *Commit* with a message (the author
   from Settings, else "Bend workshop"), the last 50 commits, each with
   *Diff* (against its parent, in the history's diff view) and *Check out*;
   branches (*Create and switch*, a tap to switch). A checkout writes the
@@ -711,7 +725,9 @@ type), the goal after `⊢`, and a toolbar.
   so an entry unfolds (*▸ n events*) into its own part of the conversation:
   a reply into its call (the prompt) and its answer, a tool into its exact
   input and result, a summary batch into each summary written. Unfolded
-  entries stay open across repaints.
+  entries, and the folds opened inside them (by title and rank in their
+  entry), stay open across repaints, and the entry at the top of the view
+  stays in place while new ones come above it.
 - **Trace and export.** Every session also keeps a full trace, for
   debugging: the session's settings (profile without its key, mode, holes,
   locks, budget, tools offered, Bend version, files at the start), each Claude
@@ -808,7 +824,10 @@ type), the goal after `⊢`, and a toolbar.
   loops), `window_text` (typed text as `Text` events, worker and page). Proof tools: `goals_signatures`, `kept_goals_tooltip`, `long_goals`,
   `split`, `split_narrow`, `split_disabled`, `split_imported` (an import
   added), `constructors`, `solve_lazy`, `lemma`, `lemma_mobile`, `lemma_pong`,
-  `lemma_template` (`~f`, Ctrl+Z), `rewrite`, `copy_match` (Ctrl+Z, the
+  `lemma_template` (`~f`, Ctrl+Z), `rewrite` (grouped, inline in an
+  expression, eta-expanded functions, a goal that is not an equality),
+  `solve_error` (no Solve past an error before the hole), `goals_scroll`
+  (scroll and typing kept across repaints), `copy_match` (Ctrl+Z, the
   parameters' order), `find_comment`, `project_versions` (the id in the
   zip, a version imported, Undo, a snapshot exported, diffs, an unknown
   id kept), `todo_goals` (`?TODO` cards, no snippet during the agent), `lawdef_pong`, `operators`, `opcalls`,

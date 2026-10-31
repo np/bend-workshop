@@ -2291,6 +2291,15 @@
     goals.head.setAttribute("aria-expanded", String(goals.open));
     const live = goals.cards.filter((c) => !c.gone).length;
     goals.count.textContent = t("goals_count", live, n - live);
+    // a repaint keeps the list where it was scrolled, and the field being
+    // typed in, so it stays usable while checks and probes come in
+    const scroll = goals.list.scrollTop;
+    const act = document.activeElement;
+    let focus = null;
+    if (act && goals.list.contains(act) && act.tagName === "INPUT") {
+      const owner = goals.cards.find((c) => c.node && c.node.contains(act));
+      focus = owner ? { key: owner.key, label: act.getAttribute("aria-label"), a: act.selectionStart, b: act.selectionEnd } : null;
+    }
     goals.list.textContent = "";
     if (!goals.open) {
       return;
@@ -2329,7 +2338,7 @@
             onclick: () => refine(c) }));
         }
       }
-      if (!c.gone && !picking && /^\{.* == .*\}$/s.test(c.expected.trim())) {
+      if (!c.gone && !picking) {
         tools.push(el("button", { class: "chip" + (c.rw !== undefined ? " on" : ""), type: "button", text: t("rw"), "aria-label": t("rw_aria"),
           onclick: () => {
             c.rw = c.rw === undefined ? { eq: rw_guess(c), busy: false, err: "", eqty: null, cands: null } : undefined;
@@ -2458,6 +2467,17 @@
       c.node = card;
       goals.list.append(card);
     }
+    goals.list.scrollTop = scroll;
+    if (focus) {
+      const owner = goals.cards.find((c) => c.key === focus.key && c.node);
+      const input = owner ? [...owner.node.querySelectorAll("input")].find((x) => x.getAttribute("aria-label") === focus.label) : null;
+      if (input) {
+        input.focus({ preventScroll: true });
+        try {
+          input.setSelectionRange(focus.a, focus.b);
+        } catch (e) {}
+      }
+    }
     goals.near = null;
     goals_near();
     agent_tab();
@@ -2483,8 +2503,14 @@
         c.node.classList.toggle("near", c === near);
       }
     }
-    if (near && near.node && !goals.cards.some((c) => c.gone)) {
-      goals.list.scrollTop = near.node.offsetTop - goals.list.offsetTop;
+    // brought into view when the caret moves to another goal, not on each
+    // repaint (a repaint keeps the scroll)
+    const key = near ? near.key : null;
+    if (key !== goals.near_key) {
+      goals.near_key = key;
+      if (near && near.node && !goals.cards.some((c) => c.gone)) {
+        goals.list.scrollTop = near.node.offsetTop - goals.list.offsetTop;
+      }
     }
   }
 
@@ -2600,7 +2626,15 @@
     const cands = refine_list(c, text);
     const files = files_map();
     const base = await comp_ask(c.file, false, files);
-    const same = (q) => !q.ok && !q.open && !base.ok && !base.open && q.where && base.where
+    // the file failing already: a candidate leaving that same error fits
+    // only when the error lies past the hole's declaration, where the
+    // checker went after the hole; one before it, or in the declaration
+    // itself (a parameter consumed twice), may stop the checker before it
+    // reaches the hole, and then any candidate would look as good
+    const decl = decls_of(c.file).filter((d) => d.kind !== "ctor" && d.line <= c.line).sort((x, y) => y.line - x.line)[0];
+    const end = decl ? decl.line + decl.text.split("\n").length - 1 : c.line;
+    const past = !!base.where && (base.where.file || c.file) === c.file && base.where.line > end;
+    const same = (q) => past && !q.ok && !q.open && !base.ok && !base.open && q.where && base.where
       && q.where.file === base.where.file && q.where.line === base.where.line && q.text === base.text;
     const out = [];
     for (const term of cands) {
@@ -2735,13 +2769,19 @@
 
   // Rewrite
   // =======
-  // An equality e : {a == b : T} rewrites the goal: %e : P, P the goal with
-  // _ marking b, leaves P with a there. The card asks for e (a hypothesis,
-  // a lemma's call), learns its type from the checker (a copy of the file
-  // where the hole is `__eq = e` then the hole), and offers every place of
-  // the goal where b stands (or a, through Equal.sym), each tried first,
-  // shown with the goal it leaves. One that leaves both sides the same is
-  // written with {==} after it, closing the goal.
+  // An equality e : {a == b : T} rewrites the goal, of any type: %e : P, P
+  // the goal with _ marking b, leaves P with a there. The card asks for e
+  // (a hypothesis, a lemma's call), learns its type from the checker (a
+  // copy of the file where the hole is `__eq = e` then the hole), and
+  // offers every place of the goal where b stands, and where a stands
+  // (through Equal.sym), in two groups, each tried first and shown with
+  // the goal it leaves. One that leaves an equality's sides the same is
+  // written with {==} after it, closing the goal. A hole alone on its line
+  // takes the rewrite as a statement above it; a hole inside an
+  // expression (an argument) takes it inline: (%e : P; ?hole). Terms are
+  // matched eta-contracted (x => y => f(x, y) is f), as the checker
+  // compares them, since the goal and the equality may print a function
+  // either way.
 
   // An equality of the context, the first guess.
   function rw_guess(c) {
@@ -2761,6 +2801,24 @@
     return colon.length >= 2 && sides.length === 2 ? [sides[0].trim(), sides[1].trim(), colon[colon.length - 1].trim()] : null;
   }
 
+  // x1 => .. => xn => F(x1, .., xn) as F, F a name: the same term up to
+  // eta, which is how the checker compares.
+  function rw_eta(text) {
+    let out = text;
+    for (let n = 0; n < 8; n++) {
+      const next = out.replace(/(^|[^\w.])((?:[+-]?[A-Za-z_]\w*\s*=>\s*)+)([A-Za-z_][\w.]*)\(([^()]*)\)/g, (all, pre, binds, f, args) => {
+        const xs = binds.split("=>").map((x) => x.trim().replace(/^[+-]/, "")).filter(Boolean);
+        const as = args.split(",").map((x) => x.trim());
+        return as.length === xs.length && as.every((x, i) => x === xs[i]) && !xs.some((x) => f.split(".").includes(x)) ? pre + f : all;
+      });
+      if (next === out) {
+        break;
+      }
+      out = next;
+    }
+    return out;
+  }
+
   // Where a term stands in a text, as a whole (not inside a longer name).
   function rw_places(text, term) {
     const out = [];
@@ -2774,15 +2832,25 @@
     return out;
   }
 
-  // The file with the hole's line given other lines (at its indentation).
-  function rw_text(c, text, lines) {
+  // The file with steps before the hole, then tail (the hole, or {==}):
+  // as lines at its indentation when it is alone on its line, else inline,
+  // (step; ..; tail) in its place.
+  function rw_text(c, text, steps, tail) {
     const all = text.split("\n");
     const cur = all[c.line - 1] || "";
-    if (cur.trim() !== "?" + c.name) {
+    if (cur.trim() === "?" + c.name) {
+      const ind = /^\s*/.exec(cur)[0];
+      all.splice(c.line - 1, 1, ...steps.concat([tail]).map((l) => ind + l));
+      return all.join("\n");
+    }
+    let at = cur.indexOf("?" + c.name, Math.max(0, c.col - 2));
+    while (at >= 0 && /[\w.]/.test(cur[at + c.name.length + 1] || "")) {
+      at = cur.indexOf("?" + c.name, at + 1);
+    }
+    if (at < 0) {
       return null;
     }
-    const ind = /^\s*/.exec(cur)[0];
-    all.splice(c.line - 1, 1, ...lines.map((l) => ind + l));
+    all[c.line - 1] = cur.slice(0, at) + "(" + steps.concat([tail]).join("; ") + ")" + cur.slice(at + c.name.length + 1);
     return all.join("\n");
   }
 
@@ -2790,11 +2858,6 @@
     const f = state.files.find((x) => x.name === c.file);
     const e = c.rw.eq.trim();
     if (!f || e === "") {
-      return;
-    }
-    if (!hole_alone(c)) {
-      c.rw.err = t("rw_alone");
-      goals_paint();
       return;
     }
     c.rw.busy = true;
@@ -2805,7 +2868,11 @@
       const files = files_map();
       const text = f.text;
       // what e proves: the hole's context, with e bound to a name of its own
-      const probe = rw_text(c, text, ["__eq = " + e, "?" + c.name]);
+      const probe = rw_text(c, text, ["__eq = " + e], "?" + c.name);
+      if (probe === null) {
+        c.rw.err = t("ai_hole_gone");
+        return;
+      }
       const q = await comp_ask(c.file, false, { ...files, [c.file]: probe });
       const g = (q.goals || []).find((x) => x.name === c.name);
       const own = g && g.ctx.find(([k]) => k === "__eq");
@@ -2817,23 +2884,24 @@
       c.rw.eqty = eq;
       const tpl = lemma_templates(c);
       const fix = (x) => (tpl.re ? x.replace(tpl.re, "~$1") : x);
-      const goal = fix(c.expected.replace(/\s*\n\s*/g, " ").trim());
-      const [a, b, ty] = eq.map(fix);
+      const goal = rw_eta(fix(c.expected.replace(/\s*\n\s*/g, " ").trim()));
+      const [a, b, ty] = eq.map((x) => rw_eta(fix(x)));
       // b where it stands becomes a; a where it stands becomes b, the
       // equality turned round
       const tries = [];
       for (const at of rw_places(goal, b)) {
-        tries.push({ dir: "ab", line: "%" + e + " : " + goal.slice(0, at) + "_" + goal.slice(at + b.length), at, len: b.length });
+        const motive = goal.slice(0, at) + "_" + goal.slice(at + b.length);
+        tries.push({ dir: "ab", line: "%" + e + " : " + motive, motive, at, len: b.length });
       }
       if (a !== b) {
         for (const at of rw_places(goal, a)) {
-          tries.push({ dir: "ba", line: "%Equal.sym(" + ty + ", " + a + ", " + b + ", " + e + ") : " + goal.slice(0, at) + "_" + goal.slice(at + a.length),
-            at, len: a.length });
+          const motive = goal.slice(0, at) + "_" + goal.slice(at + a.length);
+          tries.push({ dir: "ba", line: "%Equal.sym(" + ty + ", " + a + ", " + b + ", " + e + ") : " + motive, motive, at, len: a.length });
         }
       }
       const out = [];
       for (const k of tries.slice(0, 12)) {
-        const next = rw_text(c, text, [k.line, "?" + c.name]);
+        const next = rw_text(c, text, [k.line], "?" + c.name);
         const r = await comp_ask(c.file, false, { ...files, [c.file]: next });
         const after = (r.goals || []).find((x) => x.name === c.name);
         const sides = after ? rw_eq(after.expected) : null;
@@ -2861,15 +2929,16 @@
     if (i !== state.active) {
       files_pick(i);
     }
-    const next = rw_text(c, ed.ta.value, [k.line, k.closes ? "{==}" : "?" + c.name]);
+    const next = rw_text(c, ed.ta.value, [k.line], k.closes ? "{==}" : "?" + c.name);
     if (next === null) {
       toast(t("ai_hole_gone"));
       return;
     }
     const keep = work_snapshot();
     c.rw = undefined;
+    const alone = hole_alone(c);
     ed_rewrite(next);
-    ed_goto(c.line + 1, 1);
+    ed_goto(c.line + (alone ? 1 : 0), 1);
     toast(t(k.closes ? "rw_closed" : "rw_done"), t("undo"), () => work_restore(keep));
   }
 
@@ -2895,14 +2964,27 @@
     if (c.rw.err) {
       box.append(el("div", { class: "rw-err", text: c.rw.err }));
     }
-    for (const k of c.rw.cands || []) {
-      const shown = k.line.slice(k.line.indexOf(" : ") + 3);
-      box.append(el("button", { class: "rw-cand" + (k.ok ? " fits" : " bad"), type: "button", "aria-disabled": String(!k.ok),
-        title: k.ok ? "" : k.why, onclick: () => (k.ok ? rw_put(c, k) : toast(t("cand_bad", k.why))) },
-        el("span", { class: "rw-dir", text: k.dir === "ab" ? "→" : "←" }),
-        el("span", { html: highlight(shown) }),
-        k.ok ? el("small", { class: "dim", html: (k.closes ? "<b>{==}</b> " : "⊢ ") + highlight(pp(k.after, cols - 4).join(" ")) })
-          : el("small", { class: "dim", text: k.why })));
+    // two groups: where the right side stands (e as it is), where the
+    // left side stands (through Equal.sym)
+    const eqty = c.rw.eqty;
+    for (const dir of ["ab", "ba"]) {
+      const group = (c.rw.cands || []).filter((k) => k.dir === dir);
+      if (group.length === 0) {
+        continue;
+      }
+      box.append(el("div", { class: "rw-group" },
+        el("b", { text: t(dir === "ab" ? "rw_right" : "rw_left") }), " ",
+        el("small", { class: "dim", html: dir === "ab" ? highlight(eqty[1]) + " → " + highlight(eqty[0])
+          : highlight(eqty[0]) + " → " + highlight(eqty[1]) + " · Equal.sym" })));
+      for (const k of group) {
+        const shown = k.motive;
+        box.append(el("button", { class: "rw-cand" + (k.ok ? " fits" : " bad"), type: "button", "aria-disabled": String(!k.ok),
+          title: k.ok ? "" : k.why, onclick: () => (k.ok ? rw_put(c, k) : toast(t("cand_bad", k.why))) },
+          el("span", { class: "rw-dir", text: dir === "ab" ? "→" : "⇄" }),
+          el("span", { html: highlight(shown) }),
+          k.ok ? el("small", { class: "dim", html: (k.closes ? "<b>{==}</b> " : "⊢ ") + highlight(pp(k.after, cols - 4).join(" ")) })
+            : el("small", { class: "dim", text: k.why })));
+      }
     }
     return box;
   }

@@ -494,9 +494,18 @@
         " · " + (st.head ? st.head.slice(0, 7) : t("git_no_commit")) + (st.url ? " · " + st.url : "")));
       // changes and a commit
       const msg = el("input", { type: "text", placeholder: t("git_msg_ph"), "aria-label": t("git_msg_ph") });
+      // each change opens its diff against the last commit, before committing
+      const review = async (only) => {
+        const head = st.head ? await git_files_at(pid, st.head) : [];
+        const want = (n) => st.changed.some((c) => c.file === n) && (!only || n === only);
+        diff_sheet(only ? t("git_diff_file", only) : t("git_diff_all"), head.filter(([n]) => want(n)),
+          state.files.filter((f) => want(f.name)).map((f) => [f.name, f.text]));
+      };
       body.append(el("div", { class: "field" }, el("span", { text: t("git_changes", st.changed.length) }),
-        st.changed.length ? el("div", { class: "git-changes" }, ...st.changed.map((c) => el("span", { class: "chip git-" + c.kind,
-          text: (c.kind === "new" ? "+ " : c.kind === "gone" ? "− " : "~ ") + c.file }))) : null,
+        st.changed.length ? el("div", { class: "git-changes" }, ...st.changed.map((c) => el("button", { class: "chip git-" + c.kind,
+          type: "button", title: t("git_diff_file", c.file), text: (c.kind === "new" ? "+ " : c.kind === "gone" ? "− " : "~ ") + c.file,
+          onclick: () => review(c.file) })), st.changed.length > 1 ? el("button", { class: "chip", type: "button", text: t("git_review"),
+          onclick: () => review(null) }) : null) : null,
         el("div", { class: "row" }, msg, el("button", { class: "btn primary", type: "button", text: t("git_commit"),
           disabled: st.changed.length === 0 && st.head !== null, onclick: () => {
             const m = msg.value.trim();

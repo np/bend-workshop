@@ -1540,3 +1540,4 @@ button.goal-name { text-decoration: underline; text-underline-offset: 3px; }
 .git-rows { display: grid; gap: 10px; margin-top: 8px; }
 .git-rows label { font-size: 12.5px; display: grid; gap: 4px; }
 .git-rows input { font-size: 14px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); }
+.rw-group { margin-top: 4px; font-size: 12.5px; }

@@ -1631,6 +1631,7 @@
       }
     };
     d.addEventListener("toggle", () => d.open && fill());
+    d._fill = fill;
     if (open) {
       d.open = true;
       fill();
@@ -2148,6 +2149,7 @@
       return;
     }
     const keepTask = $("#agent-task") ? $("#agent-task").value : agent.draft || "";
+    const kept = journal_keep(pane);
     pane.textContent = "";
     const box = el("div", { class: "agent" });
     if (!agent_ok() && !agent.running) {
@@ -2234,11 +2236,66 @@
       box.append(ses_list());
     }
     pane.append(box);
+    journal_restore(pane, kept);
     if (agent.jump !== undefined) {
       const at = pane.querySelector("[data-j=\"" + agent.jump + "\"]");
       agent.jump = undefined;
       if (at) {
         at.scrollIntoView({ block: "start" });
+      }
+    }
+  }
+
+  // The journal is built again on each repaint: what was open in it (the
+  // folds of each entry, by title and rank) opens again, and the entry at
+  // the top of the view stays where it was, new entries coming above it.
+  function fold_keys(item, each) {
+    const seen = new Map();
+    for (const d of item.querySelectorAll("details")) {
+      const s = d.firstElementChild ? d.firstElementChild.textContent : "";
+      const n = seen.get(s) || 0;
+      seen.set(s, n + 1);
+      each(d, item.dataset.j + "|" + s + "|" + n);
+    }
+  }
+
+  function journal_keep(pane) {
+    const open = new Set();
+    let anchor = null;
+    const top = pane.getBoundingClientRect().top;
+    for (const item of pane.querySelectorAll(".ag-item[data-j]")) {
+      fold_keys(item, (d, k) => d.open && open.add(k));
+      const r = item.getBoundingClientRect();
+      if (anchor === null && pane.scrollTop > 0 && r.bottom > top) {
+        anchor = { j: item.dataset.j, off: r.top - top };
+      }
+    }
+    return { open, anchor };
+  }
+
+  function journal_restore(pane, kept) {
+    for (const item of pane.querySelectorAll(".ag-item[data-j]")) {
+      // a fold opened may hold folds of its own: a few passes
+      for (let pass = 0; pass < 6; pass++) {
+        let more = false;
+        fold_keys(item, (d, k) => {
+          if (!d.open && kept.open.has(k)) {
+            d.open = true;
+            if (d._fill) {
+              d._fill();
+            }
+            more = true;
+          }
+        });
+        if (!more) {
+          break;
+        }
+      }
+    }
+    if (kept.anchor) {
+      const item = pane.querySelector(".ag-item[data-j=\"" + kept.anchor.j + "\"]");
+      if (item) {
+        pane.scrollTop += item.getBoundingClientRect().top - pane.getBoundingClientRect().top - kept.anchor.off;
       }
     }
   }

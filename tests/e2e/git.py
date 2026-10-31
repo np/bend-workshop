@@ -57,6 +57,9 @@ with sync_playwright() as p:
     check("1 committed:", "No change" in page.inner_text(".git"), "first" in page.inner_text(".git-log"))
     page.click(".sheet-head button"); set_code(page, B); git_sheet(page)
     check("1 a change seen:", "1 file changed" in page.inner_text(".git"))
+    page.locator(".git-changes .chip", has_text="main.bend").click(); time.sleep(0.8)
+    check("1 its diff before the commit:", "+   2n" in page.locator(".diff .add").all_inner_texts(), "-   1n" in page.locator(".diff .del").all_inner_texts())
+    page.locator(".sheet-head button").last.click(); time.sleep(0.3)
     commit(page, "second")
     check("1 two commits:", page.locator(".git-commit").count() == 2)
     # 2 the diff of the last commit

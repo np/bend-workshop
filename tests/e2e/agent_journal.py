@@ -12,6 +12,7 @@ MOCK = """window.__plan = []; window.__inputs = []; window.__says = [];
 window.claude = { use: async (n) => n === 'sample' ? Object.assign(async (input, opts) => {
   if (opts.modelTier === 'quick' && !opts.tools) return { text: 'summary', truncated: false };
   window.__inputs.push(input);
+  if (window.__inputs.length === 2 && window.__wait) await new Promise((r) => setTimeout(r, window.__wait));
   const tools = opts.tools || [];
   for (const [name, args] of (window.__plan.shift() || [])) { const tl = tools.find(t => t.name === name); try { await tl.execute(args, {}); } catch (e) {} }
   const text = window.__says.shift() || 'Nothing more.\\nSTATUS: blocked';
@@ -48,8 +49,18 @@ with sync_playwright() as p:
     page.locator(".agent-form .chip", has_text="Only chosen holes").click(); time.sleep(0.2)
     page.evaluate("""() => { window.__plan = [[['check', {}]], [['fill_hole', {hole: 'base', code: '{==}'}]]];
       window.__says = ['Looked at it.', 'Filled.\\nSTATUS: done']; }""")
+    page.evaluate("window.__wait = 4000")
     page.click(".agent-form .btn:has-text('Start')")
+    # while the second call waits: an entry unfolded, a fold inside it opened
+    page.wait_for_selector(".ag-unfold", timeout=30000); time.sleep(0.5)
+    first_say = page.locator(".agent-log > .ag-item", has=page.locator(".ag-say", has_text="Looked at it.")).first
+    first_say.locator(".ag-unfold").click(); time.sleep(0.3)
+    first_say = page.locator(".agent-log > .ag-item", has=page.locator(".ag-say", has_text="Looked at it.")).first
+    first_say.locator(".ag-events details > summary").first.click(); time.sleep(0.3)
     page.wait_for_selector(".ag-verdict", timeout=30000); time.sleep(0.6)
+    first_say = page.locator(".agent-log > .ag-item", has=page.locator(".ag-say", has_text="Looked at it.")).first
+    check("2b still open after new entries:", first_say.locator(".ag-events").count() == 1,
+          first_say.locator(".ag-events details[open]").count() >= 1)
     ins = page.evaluate("window.__inputs")
     check("2 relaunched once:", len(ins), len(ins) == 2, "your message ended without a STATUS line" in ins[1],
           "Always name lemmas in snake_case." in ins[0], ins[0].index("Always name lemmas") < ins[0].index("<chat>\n"))
