@@ -503,8 +503,15 @@ type), the goal after `⊢`, and a toolbar.
 - **Local.** *Create a repository* (branch `main`), the changes since the
   last commit (new, changed, gone; each opens its diff against the last
   commit, *Review all* every one, before committing), *Commit* with a message (the author
-  from Settings, else "Bend workshop"), the last 50 commits, each with
-  *Diff* (against its parent, in the history's diff view) and *Check out*;
+  from Settings, else "Bend workshop"); the history of the whole
+  repository, as VS Code's graph lists it: the commits of HEAD, of every
+  branch and of every `origin/…` branch, merged, newest first (100 at
+  most), so a checkout of an old commit still shows the newer ones; marks
+  where the workspace is (the current branch filled, or *HEAD (detached)*),
+  each branch, and `origin/…` (where the remote was at the last fetch,
+  pull or push); each commit with *Diff* (against its parent, in the
+  history's diff view) and *Check out* (*Check out main* at a branch's
+  tip, which keeps HEAD on the branch);
   branches (*Create and switch*, a tap to switch). A checkout writes the
   files over the project's after a snapshot ("before a git checkout or
   pull"), with Undo (which gives the files back, not HEAD).
@@ -513,7 +520,8 @@ type), the goal after `⊢`, and a toolbar.
   a `.git` brings the repository back, for a new project or a new version.
   A project deleted takes its repository along, Undo brings both back.
 - **Remotes.** One remote, `origin`, its URL in the sheet; *Clone* (into a
-  new project; one branch, the last 50 commits), *Pull* (fast-forward; the
+  new project; one branch, the last 50 commits), *Fetch* (origin's branches
+  brought up to date, the workspace left alone), *Pull* (fast-forward; the
   changes must be committed first), *Push* (the current branch). A page
   may only reach a host that allows it (CORS): Gitea, Gogs, Azure DevOps.
   GitHub, GitLab and Bitbucket allow no page, so their remotes go through
@@ -649,7 +657,10 @@ type), the goal after `⊢`, and a toolbar.
   new artifact of the viewer, a private window) starts with none, as it
   starts with no projects. The Agent tab's *Memory* view shows the
   view line by line, each opening down to its messages, and *Forget* clears
-  it, with Undo. While a batch of summaries is written, the tab shows a bar
+  it, with Undo. Its search looks in the lines as they stand (what the
+  agent sees), or, with *Search the whole tree*, in every summary and
+  every message, to find what a summary left out; each hit is marked, and
+  one not in the view says which line it lies under. While a batch of summaries is written, the tab shows a bar
   of how far the view has shrunk toward half its budget.
 - **Loops.** With Claude in the viewer, a call allows a handful of tool rounds
   and 256 KiB of text. A session is therefore a chain of calls, each from a
@@ -869,7 +880,8 @@ type), the goal after `⊢`, and a toolbar.
   `sigs_marks_lawdef_ai`, `refactors` (caret per file across a reload, an
   imported type's constructors, rename, move, a cycle refused). Outputs: `verdict_bendtt`, `compiler_outputs`,
   `heavy_demos`. Git: `git` (a repository, commits, a diff, checkout and
-  Undo, a branch; `.git` in the zip, read by the git CLI, and back; clone,
+  Undo, the newer commits kept and marked after a checkout of an old one,
+  origin's mark after a push, a branch; `.git` in the zip, read by the git CLI, and back; clone,
   a push refused then logged in, pull, from `git_server.py`; a host
   refusing pages, through a proxy). Hub: `hub` (a fake package with real hashes, from
   `fixtures/make_fakehub.py`). About: `about_versions` (the versions card, its links, the copy).
@@ -883,8 +895,8 @@ type), the goal after `⊢`, and a toolbar.
   continued with other settings and a note, then taken up again from the
   past sessions after a reload), `agent_memory` (the view in each Claude
   call, zoom, the memory across sessions and a reload, merges through the
-  quick tier past a small budget, the prompt cap, the Memory view, forget
-  and Undo), `agent_memory_api` (Haiku summaries with a simulated
+  quick tier past a small budget, the prompt cap, the Memory view and its
+  search, shallow and deep, forget and Undo), `agent_memory_api` (Haiku summaries with a simulated
   Anthropic server, a long turn started again from the memory),
   `agent_reasoning` (adaptive thinking and effort in the request, the
   thinking block sent back unchanged, its summary in the journal),

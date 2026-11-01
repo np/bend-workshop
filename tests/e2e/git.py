@@ -70,6 +70,12 @@ with sync_playwright() as p:
     git_sheet(page)
     page.locator(".git-commit").last.locator("button", has_text="Check out").click(); time.sleep(1.2)
     check("3 checked out:", code(page) == A)
+    # detached on the old one: the newer commit is still listed, marked main
+    commits = page.locator(".git-commit").all_inner_texts()
+    here = page.locator(".git-commit.here").inner_text()
+    check("3 history kept, marks:", len(commits) == 2, "HEAD (detached)" in here, "first" in here,
+          page.locator(".git-commit", has_text="second").locator(".git-mark.branch", has_text="main").count() == 1,
+          page.locator(".git-commit", has_text="second").locator("button", has_text="Check out main").count() == 1)
     page.locator(".toast button", has_text="Undo").first.click(); time.sleep(0.5)
     page.click(".sheet-head button"); time.sleep(0.2)
     check("3 undo:", code(page) == B)
@@ -102,7 +108,7 @@ with sync_playwright() as p:
         page.click("text=Import…")
     fc.value.set_files(path); time.sleep(1.5)
     git_sheet(page)
-    check("5 imported with its history:", page.locator(".git-commit").count() == 2, "No change" in page.inner_text(".git"))
+    check("5 imported with its history (both branches):", page.locator(".git-commit").count() == 3, "No change" in page.inner_text(".git"))
     page.click(".sheet-head button")
     # 6 clone, push refused, then with credentials, pull
     git_sheet(page)
@@ -124,6 +130,10 @@ with sync_playwright() as p:
     srv = subprocess.run(["git", "log", "--format=%s", "main"], cwd=os.path.join(ROOT, "seed.git"), capture_output=True, text=True).stdout.split("\n")
     tree = subprocess.run(["git", "ls-tree", "--name-only", "main"], cwd=os.path.join(ROOT, "seed.git"), capture_output=True, text=True).stdout.split()
     check("6 pushed:", srv[0] == "from the page", "README.md" in tree)
+    page.click(".sheet-head button"); git_sheet(page)
+    top = page.locator(".git-commit").first
+    check("6 origin's mark:", top.locator(".git-mark.remote", has_text="origin/main").count() == 1,
+          top.locator(".git-mark.branch.head", has_text="main").count() == 1)
     # the server gets a commit; pull
     w = tempfile.mkdtemp()
     subprocess.run(["git", "clone", "-q", os.path.join(ROOT, "seed.git"), w], check=True)

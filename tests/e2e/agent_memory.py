@@ -133,6 +133,18 @@ with sync_playwright() as p:
     n = page.evaluate("window.__compactions")
     check("6 merged:", spans[:4], max(spans) >= 4, len(c.encode()) <= 2500 + 600, "| compactions:", n, n > 0, "summary line" in c)
 
+    # 6b search: the lines as they stand miss what a summary left out; the
+    # whole tree finds it, under the line that hides it
+    page.locator(".agent-modes .chip", has_text="Memory").click(); time.sleep(0.3)
+    page.fill(".mem-search input[type=search]", "Prove add_zero")
+    page.locator(".mem-search .btn", has_text="Search").click(); time.sleep(0.3)
+    shallow = page.locator(".mem-lines > .mem-row").count()
+    page.locator(".mem-search input[type=checkbox]").check(); time.sleep(0.3)
+    deep_rows = page.locator(".mem-lines > .mem-row").all_inner_texts()
+    check("6b search:", shallow, len(deep_rows), shallow == 0, len(deep_rows) >= 1, any("under" in r for r in deep_rows),
+          page.locator(".mem-lines mark").count() >= 1)
+    page.locator(".mem-search .btn", has_text="✕").click(); time.sleep(0.2)
+    page.locator(".agent-modes .chip", has_text="Journal").click(); time.sleep(0.2)
     # 7 forgetting, and Undo
     page.locator(".agent-modes .chip", has_text="Memory").click(); time.sleep(0.3)
     page.locator(".mem .btn", has_text="Forget").click(); time.sleep(0.4)

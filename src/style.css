@@ -1546,3 +1546,12 @@ button.goal-name { text-decoration: underline; text-underline-offset: 3px; }
 .agent-settings dt { color: var(--muted); }
 .agent-settings dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .agent-ended { margin: 6px 0; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); flex-wrap: wrap; }
+.git-mark { display: inline-block; font: 600 11px var(--mono); padding: 0 6px; margin-right: 6px; border-radius: 9px; border: 1px solid var(--line); color: var(--muted); }
+.git-mark.branch { border-color: var(--cobalt); color: var(--cobalt); }
+.git-mark.branch.head, .git-mark.head { background: var(--cobalt); color: var(--surface); }
+.git-mark.remote { border-color: var(--proof); color: var(--proof); }
+.git-commit.here { background: color-mix(in srgb, var(--cobalt) 8%, transparent); }
+.git-commit.other .git-what b { font-weight: 500; }
+.mem-search { display: grid; gap: 6px; margin: 8px 0; }
+.mem-search .row input[type=search] { flex: 1; min-width: 0; font: 14px var(--mono); padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); }
+.mem-row mark, .mem pre mark { background: color-mix(in srgb, var(--warn) 45%, transparent); color: inherit; }

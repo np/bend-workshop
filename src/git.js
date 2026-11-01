@@ -323,6 +323,57 @@
     return oid;
   }
 
+  // Every commit of the repository, not only HEAD's past: the logs of HEAD,
+  // of each branch and of each of origin's, merged, newest first, each
+  // with its marks (where the workspace is, the branches, origin's).
+  async function git_history(pid, depth) {
+    const fs = await git_fs(pid);
+    const { git } = await git_lib();
+    const dir = "/";
+    const head = await git.resolveRef({ fs, dir, ref: "HEAD" }).catch(() => null);
+    const branch = await git.currentBranch({ fs, dir }).catch(() => null);
+    const refs = [{ ref: "HEAD", mark: null }];
+    for (const b of await git.listBranches({ fs, dir }).catch(() => [])) {
+      refs.push({ ref: "refs/heads/" + b, mark: { kind: "branch", name: b } });
+    }
+    for (const b of await git.listBranches({ fs, dir, remote: "origin" }).catch(() => [])) {
+      if (b !== "HEAD") {
+        refs.push({ ref: "refs/remotes/origin/" + b, mark: { kind: "remote", name: "origin/" + b } });
+      }
+    }
+    const seen = new Map();
+    const marks = new Map();
+    const mark = (oid, m) => marks.set(oid, (marks.get(oid) || []).concat([m]));
+    for (const r of refs) {
+      const oid = await git.resolveRef({ fs, dir, ref: r.ref }).catch(() => null);
+      if (oid === null) {
+        continue;
+      }
+      if (r.mark) {
+        mark(oid, r.mark);
+      }
+      for (const c of await git.log({ fs, dir, ref: oid, depth: depth || 100 }).catch(() => [])) {
+        seen.set(c.oid, c);
+      }
+    }
+    if (head) {
+      mark(head, { kind: "head", name: branch || "" });
+    }
+    const list = [...seen.values()].sort((a, b) => b.commit.committer.timestamp - a.commit.committer.timestamp
+      || b.commit.author.timestamp - a.commit.author.timestamp);
+    // what the workspace reaches: older commits of HEAD's line are shown as such
+    const mine = new Set((head ? await git.log({ fs, dir, ref: head, depth: depth || 100 }).catch(() => []) : []).map((c) => c.oid));
+    return { list: list.slice(0, depth || 100), marks, head, branch, mine };
+  }
+
+  async function git_fetch(pid) {
+    const fs = await git_fs(pid);
+    const { git, http } = await git_lib();
+    const st = await git_status(pid);
+    await git.fetch({ fs, http, dir: "/", url: st.url, remote: "origin", ...git_net(st.url) });
+    git_save(pid);
+  }
+
   async function git_log(pid, depth) {
     const fs = await git_fs(pid);
     const { git } = await git_lib();
@@ -540,6 +591,11 @@
       url.addEventListener("change", () => run(async () => { await git_remote_set(pid, url.value.trim()); }));
       body.append(el("div", { class: "field" }, el("span", { text: t("git_remote") }), url,
         el("div", { class: "row" },
+          el("button", { class: "btn", type: "button", text: t("git_fetch"), disabled: !st.url,
+            onclick: () => run(async () => {
+              await git_fetch(pid);
+              toast(t("git_fetched"));
+            }, t("git_talking")) }),
           el("button", { class: "btn", type: "button", text: t("git_pull"), disabled: !st.url,
             onclick: () => run(async () => { await git_pull(pid); }, t("git_talking")) }),
           el("button", { class: "btn", type: "button", text: t("git_push"), disabled: !st.url || !st.head,
@@ -549,14 +605,23 @@
             }, t("git_talking")) })),
         el("small", { text: (git_conf().proxy ? t("git_via_proxy", git_conf().proxy) : t("git_no_proxy")) })));
       body.append(note);
-      // the log
-      const log = await git_log(pid, 50);
+      // the history: every commit of every branch, newest first, marked
+      // where the workspace is (HEAD), where each branch and origin's are
+      const hist = await git_history(pid, 100);
+      const log = hist.list;
       const list = el("div", { class: "git-log" });
       for (const c of log) {
         const parent = c.commit.parent[0] || null;
-        list.append(el("div", { class: "git-commit" },
+        const marks = hist.marks.get(c.oid) || [];
+        const here = marks.some((m) => m.kind === "head");
+        const own = marks.find((m) => m.kind === "branch");
+        const badges = marks.filter((m) => m.kind !== "head" || !m.name).map((m) => el("span", {
+          class: "git-mark " + m.kind + (m.kind === "branch" && here && m.name === hist.branch ? " head" : ""),
+          title: t("git_mark_" + m.kind), text: m.kind === "head" ? t("git_detached_here")
+            : (m.kind === "branch" && here && m.name === hist.branch ? "● " : "") + m.name }));
+        list.append(el("div", { class: "git-commit" + (here ? " here" : "") + (hist.mine.has(c.oid) ? "" : " other") },
           el("span", { class: "git-oid", text: c.oid.slice(0, 7) }),
-          el("span", { class: "git-what" }, el("b", { text: c.commit.message.split("\n")[0] }),
+          el("span", { class: "git-what" }, ...badges, el("b", { text: c.commit.message.split("\n")[0] }),
             el("small", { text: " " + c.commit.author.name + ", " + when(c.commit.author.timestamp * 1000) })),
           el("span", { class: "snap-acts" },
             el("button", { class: "chip", type: "button", text: t("snap_diff"), onclick: async () => {
@@ -565,8 +630,9 @@
               close();
               diff_sheet(t("git_diff_title", c.oid.slice(0, 7)), a, b);
             } }),
-            el("button", { class: "chip", type: "button", text: t("git_checkout"),
-              onclick: () => run(async () => { await git_checkout(pid, c.oid); }, t("git_working")) }))));
+            here ? "" : el("button", { class: "chip", type: "button", text: own ? t("git_checkout_branch", own.name) : t("git_checkout"),
+              // a branch's tip checks the branch out (HEAD stays attached)
+              onclick: () => run(async () => { await git_checkout(pid, own ? own.name : c.oid); }, t("git_working")) }))));
       }
       body.append(el("details", { class: "hist", open: true }, el("summary", { text: t("git_log", log.length) }),
         log.length ? list : el("small", { text: t("git_log_empty") })));

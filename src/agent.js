@@ -2096,20 +2096,36 @@
   // The project's chat as the agent sees it: its view, line by line, each
   // opened down to its messages on a tap, and a way to forget it all.
 
-  function mem_row(m, id, n) {
+  // A text with what was searched for marked.
+  function mem_marked(text, q) {
+    const out = document.createDocumentFragment();
+    const low = String(text).toLowerCase();
+    const want = (q || "").toLowerCase();
+    let at = 0;
+    for (let i = want ? low.indexOf(want) : -1; i >= 0; i = low.indexOf(want, i + want.length)) {
+      out.append(text.slice(at, i), el("mark", { text: text.slice(i, i + want.length) }));
+      at = i + want.length;
+    }
+    out.append(text.slice(at));
+    return out;
+  }
+
+  function mem_row(m, id, n, q) {
     const l = Math.log2(n);
     const d = el("details", { class: "cv-fold mem-row" },
-      el("summary", {}, el("span", { class: "cv-name", text: id + "+" + n }), " ", mem_text(m, l, id / n)));
+      el("summary", {}, el("span", { class: "cv-name", text: id + "+" + n }), " ", mem_marked(mem_text(m, l, id / n) || "", q)));
     let filled = false;
     d.addEventListener("toggle", () => {
       if (d.open && !filled) {
         filled = true;
-        d.append(n === 1 ? cv_pre(m.msgs[id].kind + " · " + when(m.msgs[id].t) + "\n\n" + m.msgs[id].text)
-          : el("div", { class: "cv-list" }, mem_row(m, id, n / 2), mem_row(m, id + n / 2, n / 2)));
+        d.append(n === 1 ? el("pre", { class: "cv-pre" }, mem_marked(m.msgs[id].kind + " · " + when(m.msgs[id].t) + "\n\n" + m.msgs[id].text, q))
+          : el("div", { class: "cv-list" }, mem_row(m, id, n / 2, q), mem_row(m, id + n / 2, n / 2, q)));
       }
     });
     return d;
   }
+
+  const mem_q = { q: "", deep: false };
 
   function mem_panel() {
     const box = el("div", { class: "mem" });
@@ -2125,9 +2141,78 @@
       box.append(el("p", { class: "empty", text: t("mem_empty") }));
       return box;
     }
+    // search: in the view's lines as they stand (what the agent sees), or,
+    // ticked, in the whole tree, every summary and every message, to find
+    // what a summary left out; each hit says under which line it lies
+    const input = el("input", { type: "search", value: mem_q.q, placeholder: t("mem_search_ph"), "aria-label": t("mem_search_ph"),
+      spellcheck: "false", autocapitalize: "off" });
+    const deep = el("input", { type: "checkbox", checked: mem_q.deep });
+    const go = () => {
+      mem_q.q = input.value.trim();
+      mem_q.deep = deep.checked;
+      agent_paint();
+      const again = $(".mem-search input[type=search]");
+      if (again) {
+        again.focus();
+      }
+    };
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        go();
+      }
+    });
+    deep.addEventListener("change", go);
+    box.append(el("div", { class: "mem-search" },
+      el("div", { class: "row" }, input, el("button", { class: "btn", type: "button", text: t("mem_search"), onclick: go }),
+        mem_q.q ? el("button", { class: "btn", type: "button", text: "✕", "aria-label": t("close"), onclick: () => {
+          mem_q.q = "";
+          agent_paint();
+        } }) : ""),
+      el("label", { class: "check" }, deep, el("span", {}, t("mem_search_deep"), el("br"), el("small", { text: t("mem_search_deep_hint") })))));
     const list = el("div", { class: "cv-list mem-lines" });
-    for (const [l, i] of m.view) {
-      list.append(mem_row(m, i * 2 ** l, 2 ** l));
+    const want = mem_q.q.toLowerCase();
+    if (want === "") {
+      for (const [l, i] of m.view) {
+        list.append(mem_row(m, i * 2 ** l, 2 ** l));
+      }
+    } else {
+      // the view's line a node lies under
+      const under = (id) => {
+        const v = m.view.find(([l, i]) => id >= i * 2 ** l && id < (i + 1) * 2 ** l);
+        return v ? (v[1] * 2 ** v[0]) + "+" + 2 ** v[0] : "";
+      };
+      const hits = [];
+      for (const [l, i] of m.view) {
+        if ((mem_text(m, l, i) || "").toLowerCase().includes(want)) {
+          hits.push({ id: i * 2 ** l, n: 2 ** l, view: true });
+        }
+      }
+      if (mem_q.deep) {
+        const seen = new Set(hits.map((h) => h.id + "+" + h.n));
+        const nodes = Object.keys(m.nodes).map((k) => k.split(",").map(Number)).filter(([l]) => l > 0)
+          .sort((x, y) => y[0] - x[0] || x[1] - y[1]);
+        for (const [l, i] of nodes) {
+          const key = i * 2 ** l + "+" + 2 ** l;
+          if (!seen.has(key) && m.nodes[l + "," + i].toLowerCase().includes(want)) {
+            seen.add(key);
+            hits.push({ id: i * 2 ** l, n: 2 ** l, view: false });
+          }
+        }
+        m.msgs.forEach((x, i) => {
+          if (!seen.has(i + "+1") && (x.kind + ": " + x.text).toLowerCase().includes(want)) {
+            hits.push({ id: i, n: 1, view: false });
+          }
+        });
+      }
+      hits.sort((x, y) => x.id - y.id || y.n - x.n);
+      for (const h of hits.slice(0, 60)) {
+        const row = mem_row(m, h.id, h.n, mem_q.q);
+        if (!h.view) {
+          row.firstChild.append(el("small", { class: "dim mem-under", text: " " + t("mem_under", under(h.id)) }));
+        }
+        list.append(row);
+      }
+      box.append(el("p", { class: "dim", text: t("mem_found", hits.length) }));
     }
     box.append(list, el("div", { class: "row agent-end" }, el("button", { class: "btn danger", type: "button", text: t("mem_forget"),
       disabled: agent.running, onclick: async () => {
