@@ -159,7 +159,7 @@
       { name: "list_holes", run: tool_holes, schema: S({}),
         description: "Lists every hole ?name in the project: file, line, the def it is in, whether you may fill it, and, when the checker reached it, its goal and context. Holes the checker did not reach (behind an error) are listed too, with the reason." },
       { name: "check", run: tool_check, schema: S({ file: str }),
-        description: "Checks the project from a file (default: the session's). Returns the verdict, the error with its place, and every open goal with its context." },
+        description: "Checks the project from a file (default: the session's). Returns the verdict, the error with its place, every open goal with its context, and check_ms, the checking time in milliseconds (every write's verdict carries it too)." },
       { name: "run", run: tool_run, schema: S({ file: str, args: { type: "array", items: str } }),
         description: "Compiles a file to JavaScript and runs its main with arguments. Returns the exit code and output, capped. A program that opens a window cannot run here." },
       { name: "eval", run: tool_eval, schema: S({ file: str, expr: str, type: str }, ["expr", "type"]),
@@ -548,6 +548,11 @@
 
   function agent_summary(r) {
     const out = { verdict: r.ok ? r.text.split("\n")[0] : r.open ? "goals open" : "error" };
+    // how long the checker took, all its passes (one more per hole): the
+    // number to watch when asked to make a file check faster
+    if (r.ms && typeof r.ms.check === "number") {
+      out.check_ms = Math.round(r.ms.check);
+    }
     if (r.ok && r.text.includes("\n")) {
       out.note = r.text.split("\n").slice(1).join("\n");
     }
@@ -1155,20 +1160,22 @@
   // Kept awake
   // ----------
   // A phone freezes a page it no longer shows, except one playing sound.
-  // With the session's "keep running" setting, a sound too faint to hear
-  // (noise of ±1 in 32767, not silence: Chrome exempts only a tab whose
-  // sound it can measure) loops while the agent works; Android shows it
-  // as media, with Stop. While the page is shown, a wake lock keeps the
-  // screen on. All of it starts on the tap that starts the session, as
-  // browsers require, and stops when the session ends.
+  // With the session's "keep running" setting, a sound nobody hears loops
+  // while the agent works: a 20 Hz tone (below what a phone's speaker can
+  // play) at about -56 dBFS, since Chrome counts as silent, and freezes,
+  // a tab below -72 dBFS; 6 seconds long, since Chrome shows no media
+  // notification for a sound under 5. Android shows it as media, with
+  // Stop. While the page is shown, a wake lock keeps the screen on. All of
+  // it starts on the tap that starts the session, as browsers require,
+  // and stops when the session ends.
   const keep = { audio: null, lock: null, url: null };
 
   function keep_wav() {
     if (keep.url !== null) {
       return keep.url;
     }
-    const rate = 8000;
-    const n = rate;
+    const rate = 4000;
+    const n = rate * 6;
     const buf = new DataView(new ArrayBuffer(44 + n * 2));
     const str = (at, x) => [...x].forEach((ch, i) => buf.setUint8(at + i, ch.charCodeAt(0)));
     str(0, "RIFF");
@@ -1184,14 +1191,18 @@
     str(36, "data");
     buf.setUint32(40, n * 2, true);
     for (let i = 0; i < n; i++) {
-      buf.setInt16(44 + i * 2, i % 2 === 0 ? 1 : -1, true);
+      buf.setInt16(44 + i * 2, Math.round(Math.sin(2 * Math.PI * 20 * i / rate) * 72), true);
     }
-    let bin = "";
-    const bytes = new Uint8Array(buf.buffer);
-    for (let i = 0; i < bytes.length; i += 8192) {
-      bin += String.fromCharCode(...bytes.subarray(i, i + 8192));
+    try {
+      keep.url = URL.createObjectURL(new Blob([buf.buffer], { type: "audio/wav" }));
+    } catch (e) {
+      let bin = "";
+      const bytes = new Uint8Array(buf.buffer);
+      for (let i = 0; i < bytes.length; i += 8192) {
+        bin += String.fromCharCode(...bytes.subarray(i, i + 8192));
+      }
+      keep.url = "data:audio/wav;base64," + btoa(bin);
     }
-    keep.url = "data:audio/wav;base64," + btoa(bin);
     return keep.url;
   }
 
@@ -1223,6 +1234,7 @@
       });
       if ("mediaSession" in navigator) {
         navigator.mediaSession.metadata = new MediaMetadata({ title: t("keep_title"), artist: "Bend workshop" });
+        navigator.mediaSession.playbackState = "playing";
         for (const act of ["stop", "pause"]) {
           try {
             navigator.mediaSession.setActionHandler(act, () => agent_stop());
@@ -1248,6 +1260,7 @@
     }
     if ("mediaSession" in navigator) {
       navigator.mediaSession.metadata = null;
+      navigator.mediaSession.playbackState = "none";
       for (const act of ["stop", "pause"]) {
         try {
           navigator.mediaSession.setActionHandler(act, null);
@@ -1265,6 +1278,7 @@
       return;
     }
     keep_on();
+    ses.mode = "journal";
     const task = ($("#agent-task") || { value: "" }).value.trim();
     agent.task = task || (agent.mode === "holes" ? t("agent_task_holes", agent.holes.map((h) => "?" + h).join(", "))
       : t("agent_task_default"));
@@ -1297,6 +1311,7 @@
       return;
     }
     keep_on();
+    ses.mode = "journal";
     const note = ($("#agent-note") || { value: "" }).value.trim();
     if (note !== "") {
       agent.notes.push(note);
@@ -1396,6 +1411,7 @@
       wall: r.id, t0: performance.now() - last - 1000, before: k.before, proj: k.proj, holes: k.holes.slice(),
       close: k.close, size: k.size, notes: k.notes.slice(), ended: k.ended, last: k.last, done: true, note_draft: "" });
     ses.view = null;
+    ses.mode = "session";
     conv.key = "";
     agent_paint();
   }
@@ -1440,6 +1456,7 @@
     agent.done = false;
     agent.log = [];
     agent.draft = opts.task || "";
+    ses.mode = "session";
     $(".tab[data-tab=agent]").hidden = false;
     tab_set("agent");
     if (!WIDE.matches) {
@@ -2286,8 +2303,6 @@
     } else if (agent.done) {
       // a finished session: what it was asked, then what it did
       box.append(el("p", { class: "agent-task-shown", text: agent.task }));
-    } else {
-      box.append(agent_form(keepTask));
     }
     // a past session being read, or the live one
     const past = ses.view;
@@ -2297,10 +2312,11 @@
       box.textContent = "";
       box.append(el("div", { class: "agent-run" },
         el("span", { class: "grow", text: t("ses_reading", when(past.id), past.profile) }),
-        el("button", { class: "btn", type: "button", text: t("ses_back"), onclick: () => { ses.view = null; agent_paint(); } }),
+        el("button", { class: "btn", type: "button", text: t("ses_back"), onclick: () => { ses.view = null; ses.mode = "session"; agent_paint(); } }),
         el("button", { class: "btn danger", type: "button", text: t("delete"), onclick: async () => {
           await ses_del(past.id);
           ses.view = null;
+          ses.mode = "session";
           agent_paint();
         } })),
         el("p", { class: "agent-task-shown", text: past.task }));
@@ -2309,9 +2325,14 @@
     if (mem_now === undefined) {
       mem_open(state.id).then(() => agent_paint_soon());
     }
-    if (trace.length > 0 || (mem_now && mem_now.msgs.length > 0)) {
+    // the tabs: the session (its task and settings: new, during one, or
+    // to take it up again), then what it did, said, remembers
+    if (!past && ses.mode === "journal" && !agent.running && !agent.done && agent.log.length === 0) {
+      ses.mode = "session";
+    }
+    {
       const modes = el("div", { class: "row agent-modes" });
-      for (const m of ["journal", "conversation", "memory"]) {
+      for (const m of (past ? [] : ["session"]).concat(["journal", "conversation", "memory"])) {
         modes.append(el("button", { class: "chip" + (ses.mode === m ? " on" : ""), type: "button", "aria-pressed": String(ses.mode === m),
           text: t("ses_mode_" + m), onclick: () => { ses.mode = m; agent_paint(); } }));
       }
@@ -2320,11 +2341,28 @@
       }
       box.append(modes);
     }
-    if (ses.mode === "memory") {
+    if (ses.mode === "session" && !past) {
+      if (agent.running) {
+        box.append(agent_settings_view());
+      } else if (agent.done && agent.before !== null) {
+        // a session that ended can be taken up again, its settings refined
+        box.append(agent_form(agent.note_draft, true));
+      } else {
+        box.append(agent_form(keepTask));
+      }
+    } else if (ses.mode === "memory") {
       box.append(mem_panel());
     } else if (ses.mode === "conversation" && trace.length > 0) {
       box.append(conv_view(trace, past ? "past:" + past.id : "live:" + agent.wall, past ? past.id : agent.wall));
     } else {
+      if (agent.done && agent.before !== null && !past) {
+        // ended: where to go on, at the top of the journal
+        box.append(el("div", { class: "row agent-end agent-ended" },
+          el("span", { class: "grow dim", text: t("agent_ended") }),
+          el("button", { class: "btn primary", type: "button", text: t("agent_goon"), onclick: () => { ses.mode = "session"; agent_paint(); } }),
+          el("button", { class: "btn", type: "button", text: t("agent_undo"), onclick: agent_undo }),
+          el("button", { class: "btn", type: "button", text: t("agent_new"), onclick: agent_new })));
+      }
       box.append(journal_view(journal, trace, past ? past.id : agent.wall));
     }
     if (trace.length > 0) {
@@ -2334,15 +2372,11 @@
         el("button", { class: "chip", type: "button", text: ".md", "aria-label": t("agent_export") + " (.md)",
           onclick: () => agent_export("md", trace, past ? past.id : agent.wall) })));
     }
-    if (agent.done && agent.before !== null && !past) {
-      // a session that ended can be taken up again, its settings refined
-      box.append(agent_form(agent.note_draft, true));
-    }
     if (past && past.resume && past.resume.proj === state.id && !agent.running) {
       box.append(el("div", { class: "row agent-end" },
         el("button", { class: "btn primary", type: "button", text: t("ses_resume"), onclick: () => ses_take(past) })));
     }
-    if (!agent.running && !past) {
+    if (!agent.running && !past && ses.mode === "session") {
       box.append(ses_list());
     }
     pane.append(box);
@@ -2408,6 +2442,30 @@
         pane.scrollTop += item.getBoundingClientRect().top - pane.getBoundingClientRect().top - kept.anchor.off;
       }
     }
+  }
+
+  function agent_new() {
+    agent.done = false;
+    agent.log = [];
+    ses.mode = "session";
+    agent_paint();
+  }
+
+  // The settings of the session under way, to read while it works.
+  function agent_settings_view() {
+    const locks = (state.locks || []).filter((f) => state.files.some((x) => x.name === f));
+    const row = (k, v) => [el("dt", { text: k }), el("dd", { text: v })];
+    return el("dl", { class: "agent-settings" },
+      ...row(t("agent_task"), agent.task),
+      ...row(t("agent_mode"), t("agent_mode_" + agent.mode) + (agent.mode === "holes"
+        ? ": " + agent.holes.map((h) => "?" + h).join(", ") + (agent.close ? " · " + t("agent_close") : "") : "")),
+      ...(agent.mode === "holes" ? [] : row(t("agent_files"), locks.length ? "🔒 " + locks.join(", ") : t("agent_no_locks"))),
+      ...row(t("agent_entry"), agent.entry),
+      ...row(t("ai_profile"), (ai_cfg() || { name: "?" }).name),
+      ...row(t("agent_budget"), String(agent.size)),
+      ...row(t("agent_auto"), agent.auto ? "✓" : "—"),
+      ...row(t("agent_keep"), agent.keep ? "✓" : "—"),
+      ...(agent.notes.length ? row(t("agent_note"), agent.notes.map((n) => "» " + n).join("\n")) : []));
   }
 
   // The time of day, to the second.
@@ -2568,11 +2626,7 @@
         ? el("div", { class: "row agent-end" },
           el("button", { class: "btn primary", type: "button", text: t("agent_resume"), onclick: agent_resume }),
           el("button", { class: "btn", type: "button", text: t("agent_undo"), onclick: agent_undo }),
-          el("button", { class: "btn", type: "button", text: t("agent_new"), onclick: () => {
-            agent.done = false;
-            agent.log = [];
-            agent_paint();
-          } }))
+          el("button", { class: "btn", type: "button", text: t("agent_new"), onclick: agent_new }))
         : el("div", { class: "row" }, el("button", { class: "btn primary", type: "button", text: t("agent_start"), onclick: agent_start }),
           el("button", { class: "btn", type: "button", text: t("unii_btn"), onclick: unii_sheet })));
     return form;

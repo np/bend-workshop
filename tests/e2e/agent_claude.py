@@ -38,7 +38,7 @@ with sync_playwright() as p:
     # 1. hole mode, from the ?base card: only fill_hole, only ?base
     page.locator(".goal", has_text="?base").locator(".goal-head .chip", has_text="AI").click(); time.sleep(0.3)
     page.click(".sheet .btn:has-text('Agent: fill this hole')"); time.sleep(0.4)
-    print("1 pane:", page.locator("#pane-agent .chip.on").inner_text(), "| holes:", page.locator(".agent-holes").inner_text().replace("\n", " "))
+    print("1 pane:", page.locator(".agent-form .chip.on").inner_text(), "| holes:", page.locator(".agent-holes").inner_text().replace("\n", " "))
     page.evaluate("""window.__plan = [[['check', {}], ['edit_file', {path: 'main.bend', old_text: 'x', new_text: 'y'}], ['fill_hole', {hole: 'step', code: '{==}'}], ['fill_hole', {hole: 'base', code: '{==}'}]]]""")
     page.click(".agent-form .btn:has-text('Start')")
     wait_done(page)

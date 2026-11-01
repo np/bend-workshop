@@ -3715,7 +3715,8 @@
       } else {
         const head = lines[i].replace(/:\s*(#.*)?$/, "");
         const lt = head.indexOf("<");
-        decl.params = lt < 0 ? [] : split_top(head.slice(lt + 1, head.lastIndexOf(">")));
+        const gt = lt < 0 ? -1 : angle_close(head, lt);
+        decl.params = gt < 0 ? [] : split_top(head.slice(lt + 1, gt));
         decl.tail = head.replace(/^.*?\sis\s/, " is ");
         for (const l of lines.slice(i + 1, j)) {
           for (const c of l.matchAll(/(^|\s)([A-Z][\w.]*)\{([^{}]*)\}/g)) {
@@ -3892,11 +3893,45 @@
 
   // How many arguments a type application has in all: the commas before
   // the caret, plus those up to its closing >.
+  // The > closing the < at lt: brackets nested, and the operators that
+  // hold a > or a < (->, =>, <&>, <=, >=, <>) are not angles.
+  function angle_close(text, lt) {
+    let angle = 1;
+    let depth = 0;
+    for (let i = lt + 1; i < text.length && i < lt + 4000; i++) {
+      const two = text.slice(i, i + 2);
+      if (text.startsWith("<&>", i)) {
+        i += 2;
+      } else if (two === "->" || two === "=>" || two === "<=" || two === ">=" || two === "<>") {
+        i += 1;
+      } else if ("([{".includes(text[i])) {
+        depth++;
+      } else if (")]}".includes(text[i])) {
+        depth--;
+      } else if (depth === 0 && text[i] === "<") {
+        angle++;
+      } else if (depth === 0 && text[i] === ">" && --angle === 0) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
   function angle_args(text, pos, before) {
     let depth = 0;
     let n = before + 1;
     for (let i = pos; i < text.length && i < pos + 4000; i++) {
       const c = text[i];
+      const two = text.slice(i, i + 2);
+      // ->, =>, <&> and the comparisons are not brackets
+      if (text.startsWith("<&>", i)) {
+        i += 2;
+        continue;
+      }
+      if (two === "->" || two === "=>" || two === "<=" || two === ">=") {
+        i += 1;
+        continue;
+      }
       if (c === "\n" || (c === ">" && depth === 0)) {
         return n;
       }
@@ -3974,7 +4009,7 @@
         }
       } });
     const row = el("div", { class: "row" }, go);
-    const kind = refactor_kind(d, file_now().name);
+    const kind = d.kind === "def" || d.kind === "law" ? refactor_kind(d, file_now().name) : null;
     if (kind !== null) {
       row.append(el("button", { class: "btn", type: "button", text: t(kind === "split" ? "split_law" : "merge_law"),
         onclick: () => { close(); refactor(d, file_now().name); } }));
@@ -6596,7 +6631,7 @@
       app.classList.toggle("kbd", covered);
       app.style.height = covered ? vv.height + "px" : "";
       app.style.transform = covered && vv.offsetTop ? "translateY(" + vv.offsetTop + "px)" : "";
-      if (covered) {
+      if (covered && document.activeElement === ed.ta) {
         requestAnimationFrame(ed_reveal);
       }
     };
@@ -6651,7 +6686,14 @@
       verdict_set("idle", t("check_on_demand"));
     }
   });
-  window.addEventListener("resize", () => requestAnimationFrame(ed_reveal));
+  // a resize brings the caret back into view only while the editor has the
+  // focus (a keyboard opening): the browser's own find bar resizes the
+  // window too, and closing it must leave the page where the find took it
+  window.addEventListener("resize", () => requestAnimationFrame(() => {
+    if (document.activeElement === ed.ta) {
+      ed_reveal();
+    }
+  }));
   const leave = () => {
     store_flush();
     if (!state.scratch) {

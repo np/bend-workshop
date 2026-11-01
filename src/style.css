@@ -1542,3 +1542,7 @@ button.goal-name { text-decoration: underline; text-underline-offset: 3px; }
 .git-rows input { font-size: 14px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); }
 .rw-group { margin-top: 4px; font-size: 12.5px; }
 .agent-awake { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.agent-settings { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 12px; margin: 8px 0; font-size: 13px; }
+.agent-settings dt { color: var(--muted); }
+.agent-settings dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.agent-ended { margin: 6px 0; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); flex-wrap: wrap; }

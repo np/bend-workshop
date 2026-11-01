@@ -77,6 +77,8 @@ with sync_playwright() as p:
     check("2 read_file Base:", base["path"] == "Base", base["total_lines"] > 100)
     check("2 the rights come after the memory and the files:", second.rindex("<rights>\n") > second.index("</chat>"),
           second.rindex("<rights>\n") > second.index("</files>"), "locked by the user" not in second[:second.index("<chat>")])
+    chk = json.loads([r for n, r in got if n == "check"][0])
+    check("2 check says how long it took:", chk.get("check_ms"), isinstance(chk.get("check_ms"), int))
     zoom = [r for n, r in got if n == "zoom"][0]
     check("2 zoom(2) gives the lookup whole", '"kind": "tool"' in zoom, "Nat.add" in zoom)
 

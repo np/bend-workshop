@@ -276,6 +276,10 @@ targets, all pure TypeScript, so all within the page's reach:
   the editor, not a bubble over it: bright while new, dimmed after a few
   seconds, gone later; a message's button stays 30 s. Over an open sheet,
   where the line is hidden, a message floats for a few seconds.
+- **Resizes.** A window resize brings the caret back into view only while
+  the editor has the focus (a keyboard opening): a phone's find-in-page
+  bar resizes the window too, and closing it must leave the page where
+  the find took it.
 - **Live check.** The live check runs 380 ms after typing stops. A
   `PROOF.bend` in the workspace is checked too, which drives the "laws" badge.
 - **Declarations come from the text, not the checker** (`decl_scan`), so
@@ -362,7 +366,11 @@ type), the goal after `⊢`, and a toolbar.
 - **Signature bar.** The bar under the editor follows the caret. It shows the
   enclosing call with the current argument in bold, then the name under the
   caret. A type application `List<…>` gets its parameter marked; the short form
-  skips the leading quantity binders.
+  skips the leading quantity binders. A type's parameter list closes at its
+  own `>`, not at one of `<&>`, `->` or `=>` in a kind or an argument
+  (`angle_close`, `angle_args`), so `Either<a, b, -A, -B> is Kind(a <&> b)`
+  and `Sigma<Nat, x => Bool>` read right. A type's sheet has *Go to the
+  definition*, *Rename* and *Move to…*, not law⇄def.
 - **Lookup order.** Names resolve in this order: the file's own declarations,
   then an import alias (workspace file or hub module, relative imports inside
   a package included), then Base. A parameter of the enclosing def takes its
@@ -589,7 +597,9 @@ type), the goal after `⊢`, and a toolbar.
   enclosing def, whether the agent may fill it and why not, and its goal and
   context when the checker reached it, or why it did not), `edit_file` (an
   exact, unique replacement), `create_file`,
-  `fill_hole`, `check`, `run` (a main, 10 s, output capped), and `eval` (an
+  `fill_hole`, `check` (with `check_ms`, the checking time, which every
+  write's verdict carries too: what to watch when asked to make a file
+  check faster), `run` (a main, 10 s, output capped), and `eval` (an
   expression of a given type, through a copy of the file whose `main` is the
   expression; the file itself does not change). Results are plain JSON, cut
   at 6000 characters. Tool errors go back to the agent as errors; they do not
@@ -693,18 +703,29 @@ type), the goal after `⊢`, and a toolbar.
 - **Kept awake** (experimental, off by default, a session's setting). A
   phone freezes a page it no longer shows, unless it plays sound. With
   *Keep running when the page is hidden*, the tap that starts (or
-  continues) the session also starts a looping sound too faint to hear:
-  a WAV made on the spot, noise of ±1 in 32767, since Chrome exempts only
-  a tab whose sound it can measure, not true silence. The media session
-  names it ("Bend agent at work"), and its Stop and Pause stop the agent;
+  continues) the session also starts a looping sound nobody hears: a WAV
+  made on the spot, a 20 Hz tone (below what a phone's speaker plays) at
+  about -56 dBFS, since Chrome counts as silent, and freezes, a tab below
+  -72 dBFS; 6 seconds long, since Chrome shows no media notification for
+  a sound under 5 (a first version, ±1 noise of 1 second, was both too
+  faint and too short: no notification, the page froze). The media
+  session names it ("Bend agent at work", state playing), and its Stop
+  and Pause stop the agent;
   while the page is shown, a screen wake lock keeps the screen on. The
   agent's head shows "kept awake"; all of it stops when the session ends.
   If the browser refuses to play, a message says the page may freeze.
   Whether it holds on a given phone and browser was never tested on a
   real device.
+- **The tab's views.** *Session* comes first: the task and settings of a
+  new session; during one, its settings to read (task, what it may change,
+  file, profile, budget, relaunch, kept awake, notes); after one, the form
+  to take it up again, and the past sessions. Starting goes to *Journal*;
+  an ended session's journal opens on a banner (*Continue…*, which leads
+  to the Session view, *Undo the session*, *New session*). Then
+  *Conversation* and *Memory*.
 - **Taking a session up again** (by hand). A session that ended (an error, a stop,
   the agent done or blocked, the API out of breath) can be continued from
-  the tab: under its journal, the same settings as a new session (what it
+  the Session view: the same settings as a new session (what it
   may change, holes, the close option, locks, the file checked from, the
   profile, the budget), all of them changeable, and instead of the task a
   note on what to do now. *Continue the session* starts a new leg: the
@@ -840,7 +861,9 @@ type), the goal after `⊢`, and a toolbar.
   expression, eta-expanded functions, a goal that is not an equality),
   `solve_error` (no Solve past an error before the hole), `goals_scroll`
   (scroll and typing kept across repaints), `copy_match` (Ctrl+Z, the
-  parameters' order), `find_comment`, `project_versions` (the id in the
+  parameters' order), `find_comment`, `find_browser` (the editor stays where a find took it
+  when its bar closes), `sig_types` (type parameters marked, kinds with
+  `<&>`, a type's sheet), `project_versions` (the id in the
   zip, a version imported, Undo, a snapshot exported, diffs, an unknown
   id kept), `todo_goals` (`?TODO` cards, no snippet during the agent), `lawdef_pong`, `operators`, `opcalls`,
   `sigs_marks_lawdef_ai`, `refactors` (caret per file across a reload, an
@@ -865,8 +888,9 @@ type), the goal after `⊢`, and a toolbar.
   Anthropic server, a long turn started again from the memory),
   `agent_reasoning` (adaptive thinking and effort in the request, the
   thinking block sent back unchanged, its summary in the journal),
-  `agent_keep` (the faint sound and media session during a session, off
-  by default, stopped at the end),
+  `agent_keep` (the sound's length and level, the media session during a
+  session, off by default, stopped at the end; the Session tab first, its
+  settings readable during the session),
   `agent_journal` (a reply without STATUS relaunched, the journal newest
   first with times, an entry unfolded into its events, the conversation's
   link back, the user's instructions in the prompt),

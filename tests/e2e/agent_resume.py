@@ -39,6 +39,9 @@ with sync_playwright() as p:
     page.click("#chev"); time.sleep(0.2); page.locator(".tab[data-tab=agent]").scroll_into_view_if_needed(); page.click(".tab[data-tab=agent]"); time.sleep(0.3)
     page.click(".agent-form .btn:has-text('Start')"); page.wait_for_selector(".ag-verdict", timeout=30000); time.sleep(0.5)
     print("1 first leg:", page.inner_text(".ag-err")[:60].replace("\n", " "), "| verdict:", page.inner_text(".ag-verdict"))
+    # the journal says where to go on: the Session tab holds the form
+    assert page.locator(".agent-ended .btn", has_text="Continue…").count() == 1, "no way on from the journal"
+    page.locator(".agent-ended .btn", has_text="Continue…").click(); time.sleep(0.3)
     assert page.locator(".agent-resume").count() == 1, "no resume form"
     print("1 resume form:", page.inner_text(".agent-resume-title"), "| buttons:", page.locator(".agent-resume .agent-end .btn").all_inner_texts())
     page.screenshot(path=shot("shot_resume_form.png"), full_page=True)
@@ -49,7 +52,7 @@ with sync_playwright() as p:
     page.fill("#agent-budget", "7")
     page.fill("#agent-note", "The API was overloaded: just fill ?base with {==}.")
     page.locator(".agent-resume .btn", has_text="Continue the session").click()
-    page.wait_for_selector(".agent-resume", timeout=30000); time.sleep(0.5)
+    page.wait_for_selector(".agent-ended", timeout=30000); time.sleep(0.5)
     print("2 verdicts:", page.locator(".ag-verdict").all_inner_texts())
     print("2 notes:", [x for x in page.locator(".ag-note").all_inner_texts() if "resumed" in x or "»" in x])
     second = bodies[2]
