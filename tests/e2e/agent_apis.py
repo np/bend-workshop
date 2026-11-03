@@ -17,9 +17,10 @@ def openai(route):
     if route.request.method == "OPTIONS": return route.fulfill(status=204, headers=CORS)
     if "/v1/models" in route.request.url: return route.fulfill(status=200, content_type="application/json", headers=CORS, body=json.dumps({"data": [{"id": "qwen3-coder"}]}))
     body = json.loads(route.request.post_data); state["bodies"].append(body); n = state["openai"]; state["openai"] += 1
-    if n == 0: msg = {"role": "assistant", "content": None, "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "fill_hole", "arguments": json.dumps({"hole": "base", "code": "{==}"})}}]}
+    # n == 0 and the last: content as Mistral's reasoning models send it, a list of chunks
+    if n == 0: msg = {"role": "assistant", "content": [{"type": "thinking", "thinking": [{"type": "text", "text": "The base case first."}]}], "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "fill_hole", "arguments": json.dumps({"hole": "base", "code": "{==}"})}}]}
     elif n == 1: msg = {"role": "assistant", "content": "", "tool_calls": [{"id": "c2", "type": "function", "function": {"name": "fill_hole", "arguments": json.dumps({"hole": "step", "code": "{==}"})}}]}
-    else: msg = {"role": "assistant", "content": "Done.\nSTATUS: done"}
+    else: msg = {"role": "assistant", "content": [{"type": "thinking", "thinking": [{"type": "text", "text": "All filled."}]}, {"type": "text", "text": "Done.\nSTATUS: done"}]}
     route.fulfill(status=200, content_type="application/json", headers=CORS, body=json.dumps({"choices": [{"message": msg}]}))
 def set_code(page, code):
     page.evaluate("""(code) => { const ta = document.querySelector('#ed-ta'); ta.focus(); ta.select(); document.execCommand('insertText', false, code); }""", code)

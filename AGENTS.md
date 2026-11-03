@@ -617,6 +617,9 @@ type), the goal after `⊢`, and a toolbar.
   or from an error ("Agent: fix it"). The tab shows only when a profile can
   call tools: Claude where `sample.limits()` reports `tools`, Anthropic,
   OpenAI, or an OpenAI-shaped server with a tool-calling model.
+  An OpenAI-shaped reply's `content` may be a string or a list of chunks
+  (Mistral's reasoning models: `text` and `thinking`, itself a list):
+  `oa_content` reads both, the thinking shown like `reasoning_content`.
 - **Tools.** `list_files`, `read_file` (project files, `Base` as if it were a
   file, and `hub:` modules),
   `list_symbols` (what a project file, a hub module or Base declares: name,

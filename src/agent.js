@@ -219,7 +219,7 @@
       }
       const data = await res.json();
       const text = anth ? (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("")
-        : (((data.choices || [])[0] || {}).message || {}).content || "";
+        : oa_content((((data.choices || [])[0] || {}).message || {}).content).text;
       log(model, t0, text);
       return text;
     };
@@ -1103,12 +1103,36 @@
       }
       return { id: c.id, name: c.function && c.function.name, input };
     });
-    const said = { role: "assistant", content: m.content || "" };
+    const got = oa_content(m.content);
+    const think = [m.reasoning_content, m.reasoning, got.think].filter((x) => typeof x === "string" && x).join("\n\n");
+    const said = { role: "assistant", content: got.text };
     if (m.tool_calls && m.tool_calls.length) {
       said.tool_calls = m.tool_calls;
     }
-    return { text: m.content || "", calls, said, cut: ((data.choices || [])[0] || {}).finish_reason === "length",
+    return { text: got.text, think, calls, said, cut: ((data.choices || [])[0] || {}).finish_reason === "length",
       answer: (rs) => rs.map((r) => ({ role: "tool", tool_call_id: r.id, content: r.ok ? r.text : "Error: " + r.text })) };
+  }
+
+  // An OpenAI-shaped message's content: a string, or (Mistral's reasoning
+  // models, some others) a list of chunks, text and thinking, a thinking
+  // chunk holding text chunks of its own. Its text and its thinking.
+  function oa_content(c) {
+    if (typeof c === "string") {
+      return { text: c, think: "" };
+    }
+    const flat = (x) => typeof x === "string" ? x : Array.isArray(x) ? x.map(flat).join("") : x && typeof x.text === "string" ? x.text : "";
+    const text = [];
+    const think = [];
+    for (const b of Array.isArray(c) ? c : []) {
+      if (typeof b === "string") {
+        text.push(b);
+      } else if (b && (b.type === "thinking" || b.type === "reasoning")) {
+        think.push(flat(b.thinking !== undefined ? b.thinking : b.text !== undefined ? b.text : b.content));
+      } else if (b && typeof b.text === "string") {
+        text.push(b.text);
+      }
+    }
+    return { text: text.join(""), think: think.filter(Boolean).join("\n\n") };
   }
 
   // With an API the page runs the loop: the brief's head (rules and the

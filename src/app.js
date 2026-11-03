@@ -4542,7 +4542,7 @@
     if (cfg.provider === "anthropic") {
       return (data.content || []).filter((x) => x.type === "text").map((x) => x.text).join("\n");
     }
-    return ((data.choices || [])[0] || {}).message?.content || "";
+    return oa_content(((data.choices || [])[0] || {}).message?.content).text;
   }
 
   function ai_error(e) {
