@@ -5,7 +5,7 @@ import fs from "node:fs";
 import * as git from "isomorphic-git";
 const src = fs.readFileSync("src/git.js", "utf8");
 const grab = (name) => { const a = src.indexOf("  function " + name + "("); if (a < 0) throw new Error(name); return src.slice(a, src.indexOf("\n  }\n", a) + 4); };
-const api = new Function(grab("gitfs_new") + "\nconst GIT_OWN = /\\.(bend|js)$/;\n" + grab("git_tree_write") + grab("git_tree_read")
+const api = new Function(grab("gitfs_new") + "\nconst GIT_OWN = /\\.(bend|js)$/;\nconst state = { files: null, data: [] };\n" + grab("git_put") + grab("git_tree_write") + grab("git_tree_read")
   + "\nreturn { gitfs_new, git_tree_write, git_tree_read };")();
 let bad = 0;
 const check = (label, ok, ...more) => { console.log((ok ? "ok   " : "FAIL ") + label, ...more); if (!ok) bad += 1; };

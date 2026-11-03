@@ -14,21 +14,125 @@
     e.code = "ENOSYS";
     throw e;
   }
+  // Files: the project's data files (test/data/…) to read, in memory, and
+  // whatever the program writes, handed back at the end. A path is taken
+  // from the project's root; "./" and "//" are read away.
+  var __files = {};
+  var __made = {};
+  var __errno = 38;
+  var __fds = {};
+  var __fd = 3;
+  var __total = 0;
+  Object.keys(__host.files || {}).forEach(function (p) {
+    var bin = atob(__host.files[p]);
+    var b = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) {
+      b[i] = bin.charCodeAt(i);
+    }
+    __files[p] = { data: b, size: b.length };
+  });
+  function __path(name) {
+    var s = typeof name === "string" ? name : new TextDecoder().decode(name);
+    return s.replace(/^(\.\/)+/, "").replace(/\/\.\//g, "/").replace(/\/{2,}/g, "/");
+  }
+  function __fail_errno(n) {
+    var e = new Error("errno " + n);
+    e.errno = -n;
+    throw e;
+  }
+  function __grow(f, need) {
+    if (need > f.data.length) {
+      var next = new Uint8Array(Math.max(need, f.data.length * 2, 256));
+      next.set(f.data.subarray(0, f.size));
+      f.data = next;
+    }
+  }
   var __fs = {
     writeSync: function (fd, data, at, len) {
       at = at || 0;
       len = len === undefined || len === null ? data.length - at : len;
-      if (fd !== 1 && fd !== 2) {
-        __nosys();
+      if (fd === 1 || fd === 2) {
+        if (__exit === null) {
+          __host.write(fd, __dec[fd].decode(data.subarray(at, at + len), { stream: true }));
+        }
+        return len;
       }
-      if (__exit === null) {
-        __host.write(fd, __dec[fd].decode(data.subarray(at, at + len), { stream: true }));
+      var h = __fds[fd];
+      if (!h || h.mode === "r") {
+        __fail_errno(9);
       }
+      if (__total + len > 16 * 1024 * 1024) {
+        __fail_errno(28);
+      }
+      var f = __files[h.path];
+      var pos = h.mode === "a" ? f.size : h.pos;
+      __grow(f, pos + len);
+      f.data.set(data.subarray(at, at + len), pos);
+      f.size = Math.max(f.size, pos + len);
+      h.pos = pos + len;
+      __total += len;
+      __made[h.path] = true;
       return len;
     },
-    openSync: __nosys, closeSync: function () {}, readSync: __nosys,
-    fstatSync: __nosys, statSync: __nosys, readFileSync: __nosys, writeFileSync: __nosys
+    openSync: function (name, mode) {
+      var p = __path(name);
+      if (p === "") {
+        __fail_errno(2);
+      }
+      var has = Object.prototype.hasOwnProperty.call(__files, p);
+      if ((mode === "r" || mode === "r+") && !has) {
+        __fail_errno(2);
+      }
+      if (mode === "wx" && has) {
+        __fail_errno(17);
+      }
+      if (mode === "w" || mode === "wx" || !has) {
+        __files[p] = { data: new Uint8Array(0), size: 0 };
+      }
+      if (mode !== "r") {
+        __made[p] = true;
+      }
+      var fd = __fd++;
+      __fds[fd] = { path: p, pos: 0, mode: mode === "wx" ? "w" : mode };
+      return fd;
+    },
+    closeSync: function (fd) {
+      delete __fds[fd];
+    },
+    readSync: __nosys,
+    fstatSync: function (fd) {
+      var h = __fds[fd];
+      if (!h) {
+        __fail_errno(9);
+      }
+      return { size: __files[h.path].size };
+    },
+    statSync: __nosys, readFileSync: __nosys, writeFileSync: __nosys
   };
+  function __read(fd, buf, want, at) {
+    if (fd === 0) {
+      return 0;
+    }
+    var h = __fds[fd];
+    if (!h) {
+      __errno = 9;
+      return -1;
+    }
+    var f = __files[h.path];
+    var from = at === null ? h.pos : at;
+    var n = Math.max(0, Math.min(want, f.size - from));
+    buf.set(f.data.subarray(from, from + n));
+    if (at === null) {
+      h.pos = from + n;
+    }
+    return n;
+  }
+  // the files written, at the end, for the page
+  function __outs() {
+    return Object.keys(__made).map(function (p) {
+      return { path: p, data: __files[p].data.slice(0, __files[p].size) };
+    });
+  }
   var process = {
     argv: ["bend", "main.bend"].concat(__host.args),
     env: __host.env,
@@ -53,7 +157,7 @@
   globalThis.BEND_SYS = {
     mac: false,
     ptr: function (b) { return b; },
-    errno: function () { return 38; },
+    errno: function () { return __errno; },
     strerror: function (code) { return __ERRS[code] || "Error " + code; },
     // io_wait selects on the parked effects: here nothing is ever ready,
     // a timed wait sleeps, and a wait with no deadline can never end.
@@ -69,7 +173,9 @@
       return 0;
     },
     socket: __fail, bind: __fail, listen: __fail, connect: __fail, accept: __fail,
-    send: __fail, recv: __fail, read: __fail, pread: __fail, sendto: __fail,
+    send: __fail, recv: __fail, sendto: __fail,
+    read: function (fd, buf, want) { return __read(fd, buf, Number(want), null); },
+    pread: function (fd, buf, want, off) { return __read(fd, buf, Number(want), Number(off)); },
     recvfrom: __fail, close: function () { return 0; }, setsockopt: __fail,
     getsockopt: __fail, fcntl: __fail
   };
@@ -320,6 +426,9 @@
   }
   function __finish() {
     __host.flush();
+    if (__host.files_out) {
+      __host.files_out(__outs());
+    }
     __host.exit(__exit === null ? 0 : __exit);
   }
   try {

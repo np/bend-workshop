@@ -1559,3 +1559,17 @@ button.goal-name { text-decoration: underline; text-underline-offset: 3px; }
 .git-merging { display: grid; gap: 6px; padding: 8px; border: 1px solid var(--warn); border-radius: 6px; background: color-mix(in srgb, var(--warn) 10%, transparent); }
 .git-conflict { gap: 6px; flex-wrap: wrap; }
 .git-conflict .grow { font-family: var(--mono); font-size: 12.5px; }
+
+/* program arguments: sets, data files; files a run made */
+.args-box .row { gap: 6px; flex-wrap: wrap; }
+.args-box label { display: flex; flex-direction: column; gap: 4px; }
+.data-files { display: flex; flex-direction: column; gap: 4px; }
+.data-file { gap: 6px; align-items: center; min-width: 0; }
+.data-file .grow { overflow-wrap: anywhere; min-width: 0; font-family: var(--mono, monospace); font-size: 0.9em; }
+.data-file a.chip { text-decoration: none; }
+.data-new textarea { width: 100%; box-sizing: border-box; font-family: var(--mono, monospace); }
+.data-new input { width: 100%; box-sizing: border-box; margin: 4px 0; }
+.out-files { border-top: 1px dashed var(--line, #8884); margin-top: 6px; padding-top: 6px; }
+.out-file { margin: 4px 0; overflow-wrap: anywhere; }
+.out-file a { font-family: var(--mono, monospace); }
+.out-file-text { white-space: pre-wrap; max-height: 40vh; overflow: auto; margin: 4px 0; }

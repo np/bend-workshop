@@ -162,7 +162,22 @@ across runs; the page sends them once per worker).
 **Running.** A compiled program becomes the source of its own worker, wrapped
 in `runner-prelude.js`. Output is batched; Stop is `terminate`. Without workers
 it runs through `new Function`, then a `<script>` tag. `IO.args()` gets the
-Settings arguments, after the program name.
+program name, then the active argument set's arguments.
+
+**Arguments and files.** A project keeps named argument sets
+(`state.argsets`, `state.argset` the active one; Settings: a dropdown, the
+set's name and line, New set, Delete the set) and data files
+(`state.data`, `{name, b64}`, shown and read as `test/data/<name>`;
+Settings: Add files…, New text file, `+ args`, download, delete with Undo).
+The prelude gives the program an in-memory file system (`__files`, base64
+from `__host.files`): `File.open` reads the data files (ENOENT, EEXIST,
+ENOSPC past 16 MB) and may write any path; the files a run wrote come back
+(`__host.files_out`) as download links under the output, a text one
+foldable to read, each with *Keep in test/data*. Both ride with the
+project: `.workshop/project.json` (`{format, id, name, args: {active,
+sets}}`) and `test/data/*` in the zip, `args`/`data` in the `.json`, and
+in git, where both are tracked and committed (`git_tracked`;
+`git_tree_extra` reads them back on checkout, pull and clone).
 
 **Windows.** The official JS IO loop never yields, so a worker running it
 cannot hear the page. A program that opens a `Window` therefore gets
@@ -448,7 +463,7 @@ type), the goal after `⊢`, and a toolbar.
 | Key | Content |
 |---|---|
 | `bend-play:v2` | Order of projects, current one, settings (live check, size, language, fonts, AI profiles) |
-| `bend-play:p:<id>` | One project: name, files, open file, arguments |
+| `bend-play:p:<id>` | One project: name, files, open file, argument sets, data files |
 | `bend-play:s:<id>` | Its snapshots |
 | `bend-play:hub` | Hub files by path under `~/.bend/lib` |
 | `bend-play:v1` | The pre-projects workspace, migrated once and left as a fallback |
@@ -493,7 +508,8 @@ type), the goal after `⊢`, and a toolbar.
 
 - **A repository per project**, kept in this browser (Projects, *Git…*;
   isomorphic-git, MIT). Its working tree is the project's files, the
-  `.bend` and `.js` ones; other files of a clone (a README) stay in the
+  `.bend` and `.js` ones, the data files (`test/data/`) and
+  `.workshop/project.json` (the argument sets); other files of a clone (a README) stay in the
   tree untouched and are committed as they are. The tree and `.git` live
   in a file system of the page's own (`gitfs_new`: files and folders in
   memory, as isomorphic-git asks for `fs.promises`), saved whole in
@@ -616,7 +632,11 @@ type), the goal after `⊢`, and a toolbar.
   exact, unique replacement), `create_file`,
   `fill_hole`, `check` (with `check_ms`, the checking time, which every
   write's verdict carries too: what to watch when asked to make a file
-  check faster), `run` (a main, 10 s, output capped), and `eval` (an
+  check faster), `run` (a main, 10 s, output capped; arguments as a list,
+  or a set by name, else the active set; the data files readable; the
+  files it wrote in `files`: text up to 3000 characters, else its start,
+  a binary one as a hexdump of its first 512 bytes), `list_args` (the
+  sets, the active one, the data files and their sizes), and `eval` (an
   expression of a given type, through a copy of the file whose `main` is the
   expression; the file itself does not change). Results are plain JSON, cut
   at 6000 characters. Tool errors go back to the agent as errors; they do not
@@ -895,7 +915,11 @@ type), the goal after `⊢`, and a toolbar.
   refusing pages, through a proxy), `git_merge` (a push refused while
   origin is ahead, a pull merging with a conflict, Keep mine, the merge
   commit with two parents pushed, a fast-forward, an abort; an empty
-  remote: push, fetch, pull). Hub: `hub` (a fake package with real hashes, from
+  remote: push, fetch, pull), `program_files` (argument sets and data
+  files in Settings at 360 px, a run reading `test/data`, writing a text
+  and a binary file: links, download, Keep; the agent's `list_args` and
+  `run` with a set and with arguments, text and hexdump; the commit, the
+  zip read by real git, `project.json`, the import). Hub: `hub` (a fake package with real hashes, from
   `fixtures/make_fakehub.py`). About: `about_versions` (the versions card, its links, the copy).
   Assistant and agent: `ai_profiles`,
   `agent_claude` (a scripted Claude: hole mode, close option, sub-holes, locks,

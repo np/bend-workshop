@@ -160,8 +160,10 @@
         description: "Lists every hole ?name in the project: file, line, the def it is in, whether you may fill it, and, when the checker reached it, its goal and context. Holes the checker did not reach (behind an error) are listed too, with the reason." },
       { name: "check", run: tool_check, schema: S({ file: str }),
         description: "Checks the project from a file (default: the session's). Returns the verdict, the error with its place, every open goal with its context, and check_ms, the checking time in milliseconds (every write's verdict carries it too)." },
-      { name: "run", run: tool_run, schema: S({ file: str, args: { type: "array", items: str } }),
-        description: "Compiles a file to JavaScript and runs its main with arguments. Returns the exit code and output, capped. A program that opens a window cannot run here." },
+      { name: "list_args", run: tool_args, schema: S({}),
+        description: "Lists the project's argument sets for running its main (their names and arguments, the active one) and its data files (test/data/…), which a running program can read by path." },
+      { name: "run", run: tool_run, schema: S({ file: str, args: { type: "array", items: str }, set: str }),
+        description: "Compiles a file to JavaScript and runs its main: with args, or the project's argument set named set, or else the active set (list_args gives them). The project's data files (test/data/…) are there to read by path. Returns the exit code, the output (capped), and the files the program wrote: each one's text when short, else its beginning, a hex dump when binary. A program that opens a window cannot run here." },
       { name: "eval", run: tool_eval, schema: S({ file: str, expr: str, type: str }, ["expr", "type"]),
         description: "Evaluates an expression of the given type in the context of a file (its defs and imports) without changing it; returns the printed value. The type may be IO(...)." });
     return tools;
@@ -631,14 +633,41 @@
 
   // Runs compiled JS in a worker of its own, with a deadline; on the page
   // where there are no workers.
+  // What a run wrote, for the agent: each file's text when short, else its
+  // beginning; a binary file as a hex dump of its first bytes.
+  function agent_files(files) {
+    return (files || []).slice(0, 12).map((f) => {
+      const text = file_text(f.data);
+      const out = { path: f.path, size: f.data.length };
+      if (text !== null) {
+        out.text = text.length > 3000 ? text.slice(0, 3000) + "…[cut: " + text.length + " characters in all]" : text;
+      } else {
+        out.binary = true;
+        out.hexdump = hexdump(f.data.subarray(0, 512)) + (f.data.length > 512 ? "\n…[cut: " + f.data.length + " bytes in all]" : "");
+      }
+      return out;
+    });
+  }
+
+  function hexdump(bytes) {
+    const lines = [];
+    for (let i = 0; i < bytes.length; i += 16) {
+      const row = [...bytes.subarray(i, i + 16)];
+      lines.push(i.toString(16).padStart(8, "0") + "  " + row.map((b) => b.toString(16).padStart(2, "0")).join(" ").padEnd(48)
+        + "  " + row.map((b) => (b >= 32 && b < 127 ? String.fromCharCode(b) : ".")).join(""));
+    }
+    return lines.join("\n");
+  }
+
   function agent_run_js(js, args) {
-    const cfg = { args, env: { USER: "bend", HOME: "/home", LANG: "en_US.UTF-8" } };
+    const cfg = { args, env: { USER: "bend", HOME: "/home", LANG: "en_US.UTF-8" }, files: data_map() };
     return new Promise((done) => {
       let out = "";
       let err = "";
       let timer = 0;
       let w = null;
       let started = false;
+      let made = [];
       const t0 = performance.now();
       const put = (fd, text) => {
         if (fd === 2) {
@@ -652,12 +681,13 @@
         if (w !== null) {
           w.terminate();
         }
-        done({ ...r, stdout: out.slice(0, 4000) + (out.length > 4000 ? "…[cut]" : ""),
+        const files = r.files || made;
+        done({ ...r, files: files.length ? agent_files(files) : undefined, stdout: out.slice(0, 4000) + (out.length > 4000 ? "…[cut]" : ""),
           stderr: err.slice(0, 2000) || undefined, ms: Math.round(performance.now() - t0) });
       };
       const page = () => {
         w = null;
-        run_page(js, cfg, put).then((g) => fin({ exit: g.code }), (e) => fin({ exit: 1, error: String(e) }));
+        run_page(js, cfg, put).then((g) => fin({ exit: g.code, files: g.files || [] }), (e) => fin({ exit: 1, error: String(e) }));
       };
       try {
         const src = WORKER_HOST + "(" + JSON.stringify(cfg) + ");\n" + run_source(js, false) + "(__bendHost);";
@@ -673,6 +703,8 @@
           started = true;
         } else if (m.out) {
           m.out.forEach(([fd, text]) => put(fd, text));
+        } else if (m.files) {
+          made = m.files;
         } else if (m.exit !== undefined) {
           fin({ exit: m.exit });
         }
@@ -710,10 +742,30 @@
     return agent_run_js(r.js, args);
   }
 
+  // args given, or a set of the project's by its name, or the active set
   async function tool_run(input) {
     const file = agent_entry_of(input);
-    const args = Array.isArray(input.args) ? input.args.map(String) : [];
+    let args;
+    if (Array.isArray(input.args)) {
+      args = input.args.map(String);
+    } else {
+      const set = typeof input.set === "string" ? state.argsets.find((x) => x.name === input.set) : state.argsets[state.argset];
+      if (!set) {
+        throw new Error("no argument set named " + input.set + " (list_args gives them)");
+      }
+      args = args_split(set.args);
+    }
     return agent_exec_main(file, files_map(), args);
+  }
+
+  // The project's argument sets, which is active, and its data files.
+  function tool_args() {
+    return {
+      active: (state.argsets[state.argset] || {}).name,
+      sets: state.argsets.map((x) => ({ name: x.name, args: args_split(x.args) })),
+      data_files: state.data.map((d) => ({ path: DATA_DIR + d.name, size: bytes_of(d.b64).length })),
+      note: "A run's program reads these files by their paths (test/data/…), relative to the project's root, and may write files: they come back in the run's result.",
+    };
   }
 
   async function tool_eval(input) {

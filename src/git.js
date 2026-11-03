@@ -215,24 +215,62 @@
   });
 
   // The project's own files in the tree: written in (the .bend and .js
-  // files, the ones gone removed), or read back out.
+  // files, the ones gone removed), or read back out. With them, the
+  // project's settings (.workshop/project.json: its argument sets) and its
+  // data files (test/data/…), so that a commit carries them too.
   const GIT_OWN = /\.(bend|js)$/;
+  const GIT_META = "/.workshop/project.json";
 
-  function git_tree_write(fs, list) {
+  function git_tracked(f) {
+    return GIT_OWN.test(f) || f.startsWith("test/data/") || f === GIT_META.slice(1);
+  }
+
+  function git_put(fs, p, data) {
+    fs.mkdirs(p.slice(0, p.lastIndexOf("/")) || "/");
+    const old = fs.files.get(p);
+    if (!old || old.data.length !== data.length || old.data.some((b, i) => b !== data[i])) {
+      fs.files.set(p, { data, mtimeMs: Date.now(), mode: old ? old.mode : 0o100644, link: null, ino: old ? old.ino : fs.files.size + 1 });
+    }
+  }
+
+  function git_tree_write(fs, list, own = list === state.files) {
     const want = new Map(list.map((f) => [fs.norm(f.name), f.text]));
+    const data = new Map(own ? state.data.map((d) => [fs.norm("/" + DATA_DIR + d.name), bytes_of(d.b64)]) : []);
     for (const p of [...fs.files.keys()]) {
-      if (!p.startsWith("/.git/") && GIT_OWN.test(p) && !want.has(p)) {
+      if (!p.startsWith("/.git/") && ((GIT_OWN.test(p) && !want.has(p)) || (own && p.startsWith("/" + DATA_DIR) && !data.has(p)))) {
         fs.files.delete(p);
       }
     }
     for (const [p, text] of want) {
-      fs.mkdirs(p.slice(0, p.lastIndexOf("/")) || "/");
-      const old = fs.files.get(p);
-      const data = new TextEncoder().encode(text);
-      if (!old || old.data.length !== data.length || old.data.some((b, i) => b !== data[i])) {
-        fs.files.set(p, { data, mtimeMs: Date.now(), mode: old ? old.mode : 0o100644, link: null, ino: old ? old.ino : fs.files.size + 1 });
+      git_put(fs, p, new TextEncoder().encode(text));
+    }
+    if (own) {
+      for (const [p, bytes] of data) {
+        git_put(fs, p, bytes);
+      }
+      git_put(fs, GIT_META, new TextEncoder().encode(JSON.stringify(proj_settings(), null, 1) + "\n"));
+    }
+  }
+
+  // What the tree says of the project besides its code: its data files and
+  // argument sets (absent: left as they are).
+  function git_tree_extra(fs) {
+    const data = [];
+    for (const [p, f] of fs.files) {
+      if (p.startsWith("/" + DATA_DIR) && f.link === null) {
+        data.push({ name: p.slice(DATA_DIR.length + 1), b64: b64_of(f.data) });
       }
     }
+    let args = null;
+    const meta = fs.files.get(GIT_META);
+    if (meta) {
+      try {
+        args = JSON.parse(new TextDecoder().decode(meta.data)).args || null;
+      } catch (e) {
+        args = null;
+      }
+    }
+    return { data, args };
   }
 
   function git_tree_read(fs) {
@@ -323,7 +361,7 @@
     const dir = "/";
     const branch = await git.currentBranch({ fs, dir }).catch(() => null);
     const head = await git.resolveRef({ fs, dir, ref: "HEAD" }).catch(() => null);
-    const rows = await git.statusMatrix({ fs, dir, filter: (f) => GIT_OWN.test(f) });
+    const rows = await git.statusMatrix({ fs, dir, filter: git_tracked });
     const changed = rows.filter(([, h, w, s]) => !(h === 1 && w === 1 && s === 1)).map(([f, h, w]) => ({
       file: f, kind: h === 0 ? "new" : w === 0 ? "gone" : "changed" }));
     const url = await git.getConfig({ fs, dir, path: "remote.origin.url" }).catch(() => null);
@@ -457,11 +495,14 @@
 
   // The working tree after a checkout, a pull or a clone, into the project:
   // a snapshot before, and Undo.
-  function git_take(files, label) {
+  function git_take(files, label, extra) {
     const keep = work_snapshot();
     snap_take("snap_before_git", true);
     const open = state.files[state.active] ? state.files[state.active].name : "";
     state.files = files.length ? files : [{ name: "main.bend", text: "import Base\n" }];
+    if (extra) {
+      proj_settings_take(extra.args, extra.data);
+    }
     state.active = Math.max(0, state.files.findIndex((f) => f.name === open));
     proj_touch();
     store_flush();
@@ -478,7 +519,7 @@
     git_tree_write(fs, state.files);
     await git.checkout({ fs, dir: "/", ref, force: true });
     git_save(pid);
-    git_take(git_tree_read(fs), t("git_switched", ref));
+    git_take(git_tree_read(fs), t("git_switched", ref), git_tree_extra(fs));
   }
 
   async function git_branch(pid, name) {
@@ -533,14 +574,14 @@
       if (e && e.code === "MergeConflictError") {
         git_merging_set(fs, { theirs, label });
         git_save(pid);
-        git_take(git_tree_read(fs), t("git_conflicts", e.data.filepaths.join(", ")));
+        git_take(git_tree_read(fs), t("git_conflicts", e.data.filepaths.join(", ")), git_tree_extra(fs));
         return;
       }
       throw e;
     }
     await git.checkout({ fs, dir, ref: st.branch, force: true });
     git_save(pid);
-    git_take(git_tree_read(fs), t("git_pulled"));
+    git_take(git_tree_read(fs), t("git_pulled"), git_tree_extra(fs));
   }
 
   // A merge given up: the files as HEAD has them again.
@@ -551,7 +592,7 @@
     await git.checkout({ fs, dir: "/", ref: branch || "HEAD", force: true });
     git_merging_set(fs, null);
     git_save(pid);
-    git_take(git_tree_read(fs), t("git_merge_aborted"));
+    git_take(git_tree_read(fs), t("git_merge_aborted"), git_tree_extra(fs));
   }
 
   // One side of every conflict of a file, kept: in the editor (one Undo
@@ -602,6 +643,9 @@
     const files = git_tree_read(fs);
     const name = decodeURIComponent(url.replace(/\/+$/, "").split("/").pop() || "repo").replace(/\.git$/, "");
     proj_new(name, files.length ? files : [{ name: "main.bend", text: "import Base\n" }], false, t("git_cloned", name));
+    const extra = git_tree_extra(fs);
+    proj_settings_take(extra.args, extra.data);
+    store_flush();
     gitst.fs.set(state.id, fs);
     await git_flush(state.id);
   }

@@ -121,7 +121,11 @@
     id: "", name: "", scratch: false, updated: 0,
     files: EXAMPLES[0].files.map((f) => ({ name: f.name, text: f.text })),
     active: 0,
-    args: "",
+    // the program's arguments: named sets, one of them active; and the data
+    // files it reads, kept with the project as test/data/<name>
+    argsets: [{ name: "default", args: "" }],
+    argset: 0,
+    data: [],
     live: true,
     size: 14,
     ai: { active: "", profiles: [], instructions: "" },
@@ -182,7 +186,8 @@
 
   function proj_pack() {
     return { id: state.id, name: state.name, scratch: state.scratch, updated: state.updated,
-      files: state.files, active: state.active, args: state.args, locks: state.locks || [], carets: state.carets || {} };
+      files: state.files, active: state.active, argsets: state.argsets, argset: state.argset, data: state.data,
+      locks: state.locks || [], carets: state.carets || {} };
   }
 
   function proj_unpack(p) {
@@ -192,7 +197,15 @@
     state.updated = p.updated || Date.now();
     state.files = p.files;
     state.active = Math.min(Math.max(0, p.active | 0), p.files.length - 1);
-    state.args = typeof p.args === "string" ? p.args : "";
+    // one string before named sets: it becomes the "default" set
+    state.argsets = Array.isArray(p.argsets) && p.argsets.length
+      ? p.argsets.filter((x) => x && typeof x.name === "string").map((x) => ({ name: x.name, args: String(x.args || "") }))
+      : [{ name: "default", args: typeof p.args === "string" ? p.args : "" }];
+    if (state.argsets.length === 0) {
+      state.argsets = [{ name: "default", args: "" }];
+    }
+    state.argset = Math.min(Math.max(0, p.argset | 0), state.argsets.length - 1);
+    state.data = Array.isArray(p.data) ? p.data.filter((d) => d && typeof d.name === "string" && typeof d.b64 === "string") : [];
     state.locks = Array.isArray(p.locks) ? p.locks.filter((x) => typeof x === "string") : [];
     state.carets = p.carets && typeof p.carets === "object" ? p.carets : {};
     store.snaps = ls_get(LS_SNAP + p.id) || [];
@@ -267,7 +280,7 @@
       state.size = Math.min(22, Math.max(11, Number(old.size) || 14));
     }
     proj_unpack({ id: proj_id(), name: had ? t("my_project") : ex_text(EXAMPLES[0].title), scratch: !had,
-      files: had ? old.files : state.files, active: had ? old.active : 0, args: had ? old.args : "" });
+      files: had ? old.files : state.files, active: had ? old.active : 0, args: had ? old.args : "", data: [] });
     store_flush();
   }
 
@@ -1210,6 +1223,8 @@
       var host = {
         args: cfg.args,
         env: cfg.env,
+        files: cfg.files || {},
+        files_out: function (f) { self.postMessage({ files: f }); },
         write: function (fd, text) {
           if (text === "") { return; }
           var top = buf[buf.length - 1];
@@ -1275,12 +1290,13 @@
         return;
       }
       const t0 = performance.now();
+      let made = [];
       const end = (r) => {
         w.terminate();
         runner.worker = null;
         runner.stop = null;
         runner.send = null;
-        done({ ...r, ms: performance.now() - t0 });
+        done({ ...r, files: made, ms: performance.now() - t0 });
       };
       runner.worker = w;
       runner.send = (ev) => w.postMessage({ ev });
@@ -1295,6 +1311,8 @@
           screen_win(m.win);
         } else if (m.frame) {
           screen_frame(m.frame, w);
+        } else if (m.files) {
+          made = m.files;
         } else if (m.exit !== undefined) {
           end({ code: m.exit });
         }
@@ -1332,14 +1350,15 @@
           host.stopped = true;
           runner.send = null;
           runner.stop = null;
-          done({ ...r, ms: performance.now() - t0 });
+          done({ ...r, files: made, ms: performance.now() - t0 });
         }
       };
       const back = { postMessage: (m) => {
         host.pool.push(m.recycle);
         host.flying = Math.max(0, host.flying - 1);
       } };
-      const host = { args: cfg.args, env: cfg.env, inbox: [], pool: [], flying: 0,
+      let made = [];
+      const host = { args: cfg.args, env: cfg.env, files: cfg.files || {}, files_out: (f) => { made = f; }, inbox: [], pool: [], flying: 0,
         alive: false, stopped: false,
         write: (fd, text) => { if (!over) { on_out(fd, text); } },
         flush() {},
@@ -1402,6 +1421,36 @@
       await new Promise((r) => setTimeout(r, 30));
       return { ...(await run_page(js, cfg, on_out)), page: true };
     }
+  }
+
+  // The active set's arguments, and the data files as the runner takes
+  // them (by path, base64).
+  function args_now() {
+    const set = state.argsets[state.argset] || state.argsets[0];
+    return set ? set.args : "";
+  }
+
+  function data_map() {
+    return Object.fromEntries(state.data.map((d) => [DATA_DIR + d.name, d.b64]));
+  }
+
+  const DATA_DIR = "test/data/";
+
+  function b64_of(bytes) {
+    let bin = "";
+    for (let i = 0; i < bytes.length; i += 8192) {
+      bin += String.fromCharCode(...bytes.subarray(i, i + 8192));
+    }
+    return btoa(bin);
+  }
+
+  function bytes_of(b64) {
+    const bin = atob(b64);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) {
+      out[i] = bin.charCodeAt(i);
+    }
+    return out;
   }
 
   function args_split(s) {
@@ -4643,9 +4692,11 @@
     }
     await marks_refresh(f);
     out_clear();
-    const argv = args_split(state.args);
+    const argv = args_split(args_now());
     out.diag.textContent = "";
-    out_add("cmd", "$ bend " + f.name + (exec && argv.length ? " " + state.args.trim() : "") + "\n");
+    const set = state.argsets[state.argset];
+    out_add("cmd", "$ bend " + f.name + (exec && argv.length ? " " + args_now().trim() : "")
+      + (exec && state.argsets.length > 1 ? "    # " + set.name : "") + "\n");
     verdict_set("busy", t("checking"));
     const mode = await comp_boot();
     const r = await comp_ask(f.name, exec);
@@ -4677,8 +4728,11 @@
       run.js = { key: js_key(), js: r.js, entry: f.name };
       js_show();
       tail += t("compiled_in", ms(r.ms.emit));
-      const cfg = { args: argv, env: { USER: "bend", HOME: "/home", LANG: "fr_FR.UTF-8" } };
+      const cfg = { args: argv, env: { USER: "bend", HOME: "/home", LANG: "fr_FR.UTF-8" }, files: data_map() };
       const got = await run_program(r.js, cfg, (fd, text) => out_add(fd === 2 ? "err" : "", text));
+      if (got.files && got.files.length) {
+        out_files(got.files);
+      }
       if (got.stopped) {
         out_add("warn", t("stopped_after", ms(got.ms)));
       } else if (got.blocked) {
@@ -4695,6 +4749,158 @@
       out_add("dim", t("checker_on_page"));
     }
     run_done();
+  }
+
+  // The files a run wrote: a link each to download it, the beginning of a
+  // short text shown, and a way to keep it among the data files.
+  // Settings: the argument sets (the active one picked in a list, named,
+  // added, removed) and the data files the program reads.
+  function args_settings() {
+    const box = el("div", { class: "field args-box" });
+    const paint = () => {
+      box.textContent = "";
+      const set = state.argsets[state.argset];
+      const pick = el("select", { class: "ai-sel", "aria-label": t("args_set") });
+      state.argsets.forEach((x, i) => pick.append(el("option", { value: String(i), text: x.name })));
+      pick.value = String(state.argset);
+      pick.addEventListener("change", () => {
+        state.argset = Number(pick.value);
+        store_save();
+        paint();
+      });
+      const name = el("input", { type: "text", value: set.name, "aria-label": t("args_name"), autocapitalize: "off", spellcheck: "false" });
+      name.addEventListener("change", () => {
+        const want = name.value.trim();
+        if (want && !state.argsets.some((x) => x !== set && x.name === want)) {
+          set.name = want;
+          store_save();
+        }
+        paint();
+      });
+      const line = el("input", { type: "text", value: set.args, autocapitalize: "off", autocomplete: "off", autocorrect: "off",
+        spellcheck: "false", placeholder: "alice 42 test/data/input.txt", "aria-label": t("args_label") });
+      line.addEventListener("input", () => {
+        set.args = line.value;
+        store_save();
+      });
+      const add = el("button", { class: "btn", type: "button", text: t("args_new"), onclick: () => {
+        let n = state.argsets.length + 1;
+        while (state.argsets.some((x) => x.name === "set " + n)) {
+          n++;
+        }
+        state.argsets.push({ name: "set " + n, args: "" });
+        state.argset = state.argsets.length - 1;
+        store_save();
+        paint();
+      } });
+      const del = el("button", { class: "btn danger", type: "button", text: t("args_delete"), disabled: state.argsets.length < 2, onclick: () => {
+        state.argsets.splice(state.argset, 1);
+        state.argset = Math.max(0, state.argset - 1);
+        store_save();
+        paint();
+      } });
+      // the data files: read by the program at test/data/<name>
+      const list = el("div", { class: "data-files" });
+      for (const d of state.data) {
+        const bytes = bytes_of(d.b64);
+        list.append(el("div", { class: "row data-file" },
+          el("span", { class: "grow", text: DATA_DIR + d.name }), el("small", { class: "dim", text: bytes_size(bytes.length) }),
+          el("button", { class: "chip", type: "button", text: t("data_insert"), title: t("data_insert_hint"), onclick: () => {
+            set.args = (set.args.trim() + " " + DATA_DIR + d.name).trim();
+            store_save();
+            paint();
+          } }),
+          el("a", { class: "chip", href: URL.createObjectURL(new Blob([bytes])), download: d.name, text: "⤓", title: t("download") }),
+          el("button", { class: "chip", type: "button", text: "✕", "aria-label": t("delete") + " " + d.name, onclick: () => {
+            const at = state.data.indexOf(d);
+            state.data.splice(at, 1);
+            store_save();
+            paint();
+            toast(t("data_deleted", d.name), t("undo"), () => {
+              state.data.splice(at, 0, d);
+              store_save();
+              paint();
+            });
+          } })));
+      }
+      const pick_files = el("input", { type: "file", multiple: true, style: "display:none" });
+      pick_files.addEventListener("change", async () => {
+        for (const f of pick_files.files) {
+          data_put(f.name, new Uint8Array(await f.arrayBuffer()));
+        }
+        paint();
+      });
+      const nname = el("input", { type: "text", placeholder: t("data_name_ph"), "aria-label": t("data_name_ph"), autocapitalize: "off", spellcheck: "false" });
+      const ntext = el("textarea", { rows: "3", placeholder: t("data_text_ph"), "aria-label": t("data_text_ph"), spellcheck: "false" });
+      box.append(el("span", { text: t("args_label") }),
+        el("div", { class: "row" }, el("span", { class: "grow" }, pick), add, del),
+        el("label", {}, t("args_name"), name),
+        el("label", {}, t("args_line"), line, el("small", { text: t("args_hint") })),
+        el("span", { text: t("data_files") }),
+        state.data.length ? list : el("small", { class: "dim", text: t("data_none") }),
+        el("div", { class: "row" }, el("button", { class: "btn", type: "button", text: t("data_add"), onclick: () => pick_files.click() }), pick_files),
+        el("details", { class: "data-new" }, el("summary", { text: t("data_new_text") }), nname, ntext,
+          el("div", { class: "row" }, el("button", { class: "btn", type: "button", text: t("data_create"), onclick: () => {
+            if (nname.value.trim()) {
+              data_put(nname.value.trim(), new TextEncoder().encode(ntext.value));
+              paint();
+            }
+          } }))));
+    };
+    paint();
+    return box;
+  }
+
+  function out_files(files) {
+    const box = el("div", { class: "out-files" }, el("div", { class: "dim", text: t("run_files", files.length) }));
+    for (const f of files) {
+      const url = URL.createObjectURL(new Blob([f.data]));
+      const name = f.path.split("/").pop() || "file";
+      const text = file_text(f.data);
+      const row = el("div", { class: "out-file" },
+        el("a", { href: url, download: name, text: "⤓ " + f.path }), el("span", { class: "dim", text: " " + bytes_size(f.data.length) + " " }),
+        el("button", { class: "chip", type: "button", text: t("run_keep"), title: t("run_keep_hint"), onclick: () => {
+          data_put(name, f.data);
+          toast(t("run_kept", DATA_DIR + name));
+        } }));
+      if (text !== null && text.length <= 4000) {
+        row.append(el("details", {}, el("summary", { text: t("run_show") }), el("pre", { class: "out-file-text", text })));
+      }
+      box.append(row);
+    }
+    out.log.append(box);
+  }
+
+  // A file's bytes as text when they are (UTF-8, no NUL), else null.
+  function file_text(bytes) {
+    if (bytes.includes(0)) {
+      return null;
+    }
+    try {
+      return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function bytes_size(n) {
+    return n < 1024 ? n + " B" : n < 1048576 ? (n / 1024).toFixed(1) + " KB" : (n / 1048576).toFixed(1) + " MB";
+  }
+
+  // A data file added (or replaced) in the project.
+  function data_put(name, bytes) {
+    const clean = name.replace(/[\/\\]/g, "_").replace(/^\.+/, "") || "data";
+    const at = state.data.findIndex((d) => d.name === clean);
+    const d = { name: clean, b64: b64_of(bytes) };
+    if (at >= 0) {
+      state.data[at] = d;
+    } else {
+      state.data.push(d);
+      state.data.sort((x, y) => x.name.localeCompare(y.name));
+    }
+    proj_touch();
+    store_save();
+    return clean;
   }
 
   function run_done() {
@@ -5312,12 +5518,17 @@
   // =========
 
   function work_snapshot() {
-    return JSON.stringify({ files: state.files, active: state.active });
+    return JSON.stringify({ files: state.files, active: state.active, argsets: state.argsets, argset: state.argset, data: state.data });
   }
 
   function work_restore(snap) {
     const got = JSON.parse(snap);
     goals_clear();
+    if (got.argsets) {
+      state.argsets = got.argsets;
+      state.argset = got.argset | 0;
+      state.data = got.data || [];
+    }
     state.files = got.files;
     files_pick(got.active);
   }
@@ -5387,7 +5598,7 @@
     const parked = proj_park();
     const name = proj_name_free(want);
     const taken = id && (id === before.id || store.others.some((p) => p.id === id));
-    proj_unpack({ id: id && !taken ? id : proj_id(), name, scratch, active: 0, args: "",
+    proj_unpack({ id: id && !taken ? id : proj_id(), name, scratch, active: 0, args: "", data: [],
       files: files.map((f) => ({ name: f.name, text: f.text })) });
     store_flush();
     work_show();
@@ -5539,6 +5750,7 @@
     const count = v.getUint16(end + 10, true);
     const dec = new TextDecoder("utf-8");
     const git_entries = [];
+    const data_entries = [];
     const out = [];
     let at = v.getUint32(end + 16, true);
     for (let n = 0; n < count && n < 20000; n++) {
@@ -5556,8 +5768,9 @@
       const memo = !all && /(^|\/)\.workshop\/(agent-memory|project)\.json$/.test(name);
       // a repository's .git, kept as bytes
       const dotgit = !all && /(^|\/)\.git\//.test(name);
+      const datafile = !all && /(^|\/)test\/data\/[^/]+$/.test(name);
       if (name.endsWith("/") || name.startsWith("__MACOSX/") || (csize > 4e6 && !memo)
-        || (all ? /\.(png|jpe?g|gif|zip|gz|wasm|bin|o|a|so|dylib|exe)$/i.test(name) : !/\.(bend|js)$/.test(name) && !memo && !dotgit)) {
+        || (all ? /\.(png|jpe?g|gif|zip|gz|wasm|bin|o|a|so|dylib|exe)$/i.test(name) : !/\.(bend|js)$/.test(name) && !memo && !dotgit && !datafile)) {
         continue;
       }
       const from = local + 30 + v.getUint16(local + 26, true) + v.getUint16(local + 28, true);
@@ -5574,6 +5787,8 @@
       }
       if (dotgit) {
         git_entries.push({ name, data: bytes.slice() });
+      } else if (datafile) {
+        data_entries.push({ name: name.replace(/^.*test\/data\//, ""), b64: b64_of(bytes) });
       } else {
         out.push({ name, text: dec.decode(bytes) });
       }
@@ -5595,7 +5810,7 @@
     // a single top folder is the project's own: its files are the project
     const top = out.length > 0 && out.every((f) => f.name.includes("/")) ? out[0].name.split("/")[0] + "/" : "";
     const flat = top !== "" && out.every((f) => f.name.startsWith(top));
-    return { folder: flat ? top.slice(0, -1) : "", memory, meta, git: git_entries,
+    return { folder: flat ? top.slice(0, -1) : "", memory, meta, git: git_entries, data: data_entries,
       files: out.map((f) => ({ name: flat ? f.name.slice(top.length) : f.name, text: f.text })) };
   }
 
@@ -5636,9 +5851,27 @@
   const MEM_ZIP = ".workshop/agent-memory.json";
   const META_ZIP = ".workshop/project.json";
 
-  function proj_meta(at) {
-    return { name: META_ZIP, text: JSON.stringify({ format: "bend-workshop/project/1", id: state.id, name: state.name,
-      saved: new Date(at || Date.now()).toISOString() }) };
+  // The project's settings as a file (.workshop/project.json, in a zip
+  // and in the git tree): its id and name, and its argument sets.
+  function proj_settings() {
+    return { format: "bend-workshop/project/1", id: state.id, name: state.name,
+      args: { active: (state.argsets[state.argset] || {}).name, sets: state.argsets.map((x) => ({ name: x.name, args: x.args })) } };
+  }
+
+  // Argument sets and data files taken from such a file (and the data
+  // files beside it); what is absent stays as it is.
+  function proj_settings_take(args, data) {
+    if (args && Array.isArray(args.sets) && args.sets.length) {
+      state.argsets = args.sets.filter((x) => x && typeof x.name === "string").map((x) => ({ name: x.name, args: String(x.args || "") }));
+      state.argset = Math.max(0, state.argsets.findIndex((x) => x.name === args.active));
+    }
+    if (Array.isArray(data)) {
+      state.data = data.slice().sort((x, y) => x.name.localeCompare(y.name));
+    }
+  }
+
+  function proj_meta() {
+    return { name: META_ZIP, text: JSON.stringify(proj_settings(), null, 1) + "\n" };
   }
 
   async function proj_export(fmt, with_mem) {
@@ -5648,9 +5881,10 @@
     try {
       if (fmt === "json") {
         await save_file(stem + ".json", JSON.stringify({ bend_project: 1, id: state.id, name: state.name, files: state.files,
-          memory: memo || undefined }, null, 1));
+          args: proj_settings().args, data: state.data.length ? state.data : undefined, memory: memo || undefined }, null, 1));
       } else {
-        const extra = [proj_meta()].concat(memo ? [{ name: MEM_ZIP, text: JSON.stringify(memo) }] : [], await git_zip_files(state.id));
+        const extra = [proj_meta()].concat(memo ? [{ name: MEM_ZIP, text: JSON.stringify(memo) }] : [],
+          state.data.map((d) => ({ name: DATA_DIR + d.name, data: bytes_of(d.b64) })), await git_zip_files(state.id));
         await save_file(stem + ".zip", zip_make(state.files.concat(extra), stem));
       }
     } catch (e) {
@@ -5693,6 +5927,8 @@
     let memo = null;
     let pid = null;
     let dotgit = null;
+    let in_args = null;
+    let in_data = null;
     const mem_take = (x) => {
       try {
         const m = typeof x === "string" ? JSON.parse(x) : x;
@@ -5724,6 +5960,10 @@
             pid = got.meta.id;
             want = got.meta.name || "";
           }
+          if (list.length === 1) {
+            in_args = (got.meta && got.meta.args) || null;
+            in_data = got.data && got.data.length > 0 ? got.data : null;
+          }
           want = want || got.folder || file.name.replace(/\.zip$/i, "");
         } else if (/\.json$/i.test(file.name)) {
           const got = JSON.parse(await file.text());
@@ -5734,6 +5974,10 @@
           want = want || got.name || "";
           if (typeof got.id === "string" && list.length === 1) {
             pid = got.id;
+          }
+          if (list.length === 1) {
+            in_args = got.args || null;
+            in_data = Array.isArray(got.data) ? got.data : null;
           }
           if (got.memory) {
             mem_take(got.memory);
@@ -5765,12 +6009,20 @@
         proj_switch(pid);
       }
       await proj_version(files, memo);
+      if (in_args || in_data) {
+        proj_settings_take(in_args, in_data);
+        store_flush();
+      }
       if (dotgit) {
         git_from_zip(state.id, dotgit, state.files);
       }
       return;
     }
     proj_new(want || t("import_name"), files, false, undefined, pid);
+    if (in_args || in_data) {
+      proj_settings_take(in_args, in_data);
+      store_flush();
+    }
     if (dotgit) {
       git_from_zip(state.id, dotgit, state.files);
     }
@@ -6172,12 +6424,7 @@
   }
 
   function settings_sheet() {
-    const args = el("input", { type: "text", value: state.args, autocapitalize: "off",
-      autocomplete: "off", autocorrect: "off", spellcheck: "false", placeholder: "alice 42" });
-    args.addEventListener("input", () => {
-      state.args = args.value;
-      store_save();
-    });
+    const args = args_settings();
     const livebox = el("input", { type: "checkbox" });
     livebox.checked = state.live;
     livebox.addEventListener("change", () => {
@@ -6213,7 +6460,7 @@
       fonts_setting(),
       ai_settings(),
       git_settings(),
-      el("label", {}, t("args_label"), args, el("small", { text: t("args_hint") })),
+      args,
       el("label", { class: "check" }, livebox,
         el("span", {}, t("live_label"), el("br"), el("small", { text: t("live_hint") }))),
       el("div", { class: "field" }, el("span", { text: t("code_size") }),
