@@ -52,7 +52,7 @@ with sync_playwright() as p:
     # 1 a repository, two commits
     git_sheet(page)
     page.locator(".git .btn", has_text="Create a repository").click(); time.sleep(1.5)
-    check("1 created:", "main" in page.inner_text(".git-head"), "1 file changed" in page.inner_text(".git"))
+    check("1 created:", "main" in page.inner_text(".git-head"), "2 files changed" in page.inner_text(".git"), ".workshop/project.json" in page.inner_text(".git-changes"))
     commit(page, "first")
     check("1 committed:", "No change" in page.inner_text(".git"), "first" in page.inner_text(".git-log"))
     page.click(".sheet-head button"); set_code(page, B); git_sheet(page)
