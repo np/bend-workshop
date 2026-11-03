@@ -6434,9 +6434,25 @@
               placeholder: cfg.provider === "anthropic" ? "claude-haiku-5-5" : cfg.model || AI_PROVIDERS[cfg.provider].model || "" });
             i.addEventListener("input", () => {
               cfg.compactor = i.value.trim() || undefined;
+              pick.value = (cfg.models || []).includes(cfg.compactor) ? cfg.compactor : "";
               save();
             });
-            return el("label", {}, t("ai_compactor"), i);
+            // the server's own models, as for the chat's model; the text
+            // stays for a name the list does not hold
+            const pick = el("select", { class: "ai-sel", "aria-label": t("ai_compactor") + " (" + t("ai_model_list") + ")" });
+            pick.append(el("option", { value: "", text: t("ai_model_free") }));
+            for (const m of cfg.models || []) {
+              pick.append(el("option", { value: m, text: m }));
+            }
+            pick.value = (cfg.models || []).includes(cfg.compactor) ? cfg.compactor : "";
+            pick.addEventListener("change", () => {
+              if (pick.value !== "") {
+                cfg.compactor = pick.value;
+                i.value = pick.value;
+                save();
+              }
+            });
+            return el("label", {}, t("ai_compactor"), pick, i);
           })(),
           el("small", { text: t(claude ? "ai_limits_hint_claude" : "ai_limits_hint_api") }),
           el("div", { class: "row" }, el("button", { class: "btn", type: "button", text: t("ai_limits_reset"), onclick: () => {

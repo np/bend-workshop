@@ -520,9 +520,18 @@ type), the goal after `⊢`, and a toolbar.
   a `.git` brings the repository back, for a new project or a new version.
   A project deleted takes its repository along, Undo brings both back.
 - **Remotes.** One remote, `origin`, its URL in the sheet; *Clone* (into a
-  new project; one branch, the last 50 commits), *Fetch* (origin's branches
-  brought up to date, the workspace left alone), *Pull* (fast-forward; the
-  changes must be committed first), *Push* (the current branch). A page
+  new project; one branch, the last 50 commits), *Fetch* (the current
+  branch fetched by its name, the workspace left alone: an empty remote,
+  or one whose HEAD names a branch it has not, as a bare repository made
+  on `master` and pushed `main`, has no HEAD to follow), *Pull* (the
+  changes committed first; up to date, a fast-forward, or a merge), *Push*
+  (the current branch; refused while origin is ahead: pull first).
+  A merge whose files conflict writes the `<<<<<<< ======= >>>>>>>` marks
+  in them and leaves a merge under way (`.git/WORKSHOP_MERGE`, the commit
+  merged in): the sheet lists the files in conflict, each with *Keep mine*,
+  *Keep theirs* (every conflict of the file, one Undo step when open) and
+  *Open*, and *Abort the merge*; *Commit*, refused while marks are left,
+  ends it with both parents, its message ready. A page
   may only reach a host that allows it (CORS): Gitea, Gogs, Azure DevOps.
   GitHub, GitLab and Bitbucket allow no page, so their remotes go through
   a CORS proxy the user sets in Settings, *Git* (their own:
@@ -643,7 +652,7 @@ type), the goal after `⊢`, and a toolbar.
   too long, the shortest kept, the join cut to fit with no answer. The
   compactor is Claude's quick tier in the viewer; with an API, the
   profile's *model for the memory's summaries* (Haiku for Anthropic, else
-  the chat's model). Unlike UniiChat, a message's own line is not
+  the chat's model; picked from the server's list of models, or typed). Unlike UniiChat, a message's own line is not
   summarized until a merge takes it in: no call is made while the view
   fits. `zoom(id, n)` opens a line into its two halves, `zoom(id, 1)` gives a
   message whole, and `search(text)` finds messages. The chat lives in
@@ -883,7 +892,10 @@ type), the goal after `⊢`, and a toolbar.
   Undo, the newer commits kept and marked after a checkout of an old one,
   origin's mark after a push, a branch; `.git` in the zip, read by the git CLI, and back; clone,
   a push refused then logged in, pull, from `git_server.py`; a host
-  refusing pages, through a proxy). Hub: `hub` (a fake package with real hashes, from
+  refusing pages, through a proxy), `git_merge` (a push refused while
+  origin is ahead, a pull merging with a conflict, Keep mine, the merge
+  commit with two parents pushed, a fast-forward, an abort; an empty
+  remote: push, fetch, pull). Hub: `hub` (a fake package with real hashes, from
   `fixtures/make_fakehub.py`). About: `about_versions` (the versions card, its links, the copy).
   Assistant and agent: `ai_profiles`,
   `agent_claude` (a scripted Claude: hole mode, close option, sub-holes, locks,

@@ -279,6 +279,40 @@
   }
 
   // The state of the repository: branch, remote, changes against HEAD.
+  // A merge with conflicts in progress: the commit merged in, kept in .git
+  // (so it is saved, and goes in a zip, with the rest); the commit that
+  // ends it takes both parents.
+  const MERGE_FILE = "/.git/WORKSHOP_MERGE";
+
+  function git_merging(fs) {
+    const f = fs.files.get(MERGE_FILE);
+    if (!f) {
+      return null;
+    }
+    const [theirs, label] = new TextDecoder().decode(f.data).split("\n");
+    return { theirs, label: label || theirs.slice(0, 7) };
+  }
+
+  function git_merging_set(fs, m) {
+    if (m) {
+      fs.files.set(MERGE_FILE, { data: new TextEncoder().encode(m.theirs + "\n" + m.label + "\n"), mtimeMs: Date.now(),
+        mode: 0o100644, link: null, ino: fs.files.size + 1 });
+    } else {
+      fs.files.delete(MERGE_FILE);
+    }
+  }
+
+  // The conflicts left in a text: <<<<<<< ours ======= theirs >>>>>>>.
+  const CONFLICT = /^<<<<<<< [^\n]*\n([\s\S]*?)^=======\n([\s\S]*?)^>>>>>>> [^\n]*\n?/gm;
+
+  function git_conflicted(text) {
+    return /^<<<<<<< /m.test(text) && /^>>>>>>> /m.test(text);
+  }
+
+  function git_resolve(text, side) {
+    return text.replace(CONFLICT, (all, ours, theirs) => (side === "ours" ? ours : theirs));
+  }
+
   async function git_status(pid) {
     const fs = await git_fs(pid);
     if (fs === null) {
@@ -294,7 +328,11 @@
       file: f, kind: h === 0 ? "new" : w === 0 ? "gone" : "changed" }));
     const url = await git.getConfig({ fs, dir, path: "remote.origin.url" }).catch(() => null);
     const branches = await git.listBranches({ fs, dir }).catch(() => []);
-    return { branch, head, changed, url, branches };
+    const merging = git_merging(fs);
+    if (merging) {
+      merging.conflicts = state.files.filter((f) => git_conflicted(f.text)).map((f) => f.name);
+    }
+    return { branch, head, changed, url, branches, merging };
   }
 
   async function git_init(pid) {
@@ -318,7 +356,14 @@
         await git.add({ fs, dir, filepath: file });
       }
     }
-    const oid = await git.commit({ fs, dir, message, author: git_author() });
+    // ending a merge: both parents, once no conflict is left
+    const merging = git_merging(fs);
+    if (merging && state.files.some((f) => git_conflicted(f.text))) {
+      throw new Error(t("git_still_conflicts"));
+    }
+    const head = merging ? await git.resolveRef({ fs, dir, ref: "HEAD" }) : null;
+    const oid = await git.commit({ fs, dir, message, author: git_author(), ...(merging ? { parent: [head, merging.theirs] } : {}) });
+    git_merging_set(fs, null);
     git_save(pid);
     return oid;
   }
@@ -366,12 +411,26 @@
     return { list: list.slice(0, depth || 100), marks, head, branch, mine };
   }
 
-  async function git_fetch(pid) {
+  // The current branch fetched by its name: an empty remote, or one whose
+  // HEAD names a branch not there (a bare repository made on master, then
+  // pushed main), has no HEAD to follow. Answers false when origin has no
+  // such branch yet.
+  async function git_fetch(pid, st) {
     const fs = await git_fs(pid);
     const { git, http } = await git_lib();
-    const st = await git_status(pid);
-    await git.fetch({ fs, http, dir: "/", url: st.url, remote: "origin", ...git_net(st.url) });
+    st = st || await git_status(pid);
+    try {
+      await git.fetch({ fs, http, dir: "/", url: st.url, remote: "origin", ref: st.branch || undefined, singleBranch: !!st.branch,
+        tags: false, ...git_net(st.url) });
+    } catch (e) {
+      const missing = e && (e.code === "NotFoundError" || /Could not find/.test(e.message || ""));
+      if (missing) {
+        return false;
+      }
+      throw e;
+    }
     git_save(pid);
+    return true;
   }
 
   async function git_log(pid, depth) {
@@ -443,20 +502,91 @@
     const fs = await git_fs(pid);
     const { git, http } = await git_lib();
     const st = await git_status(pid);
+    if (st.merging) {
+      throw new Error(t("git_merge_first"));
+    }
     if (st.changed.length > 0) {
       throw new Error(t("git_dirty"));
     }
-    await git.pull({ fs, http, dir: "/", url: st.url, ref: st.branch, singleBranch: true, fastForward: true,
-      author: git_author(), ...git_net(st.url) });
+    if (!st.branch) {
+      throw new Error(t("git_pull_detached"));
+    }
+    void http;
+    if (!(await git_fetch(pid, st))) {
+      toast(t("git_remote_empty", st.branch));
+      return;
+    }
+    const dir = "/";
+    const theirs = await git.resolveRef({ fs, dir, ref: "refs/remotes/origin/" + st.branch }).catch(() => null);
+    if (theirs === null || theirs === st.head
+      || (st.head && await git.isDescendent({ fs, dir, oid: st.head, ancestor: theirs, depth: -1 }).catch(() => false))) {
+      toast(t("git_up_to_date"));
+      return;
+    }
+    // ahead of us only: a fast-forward; else a merge, its conflicts
+    // written in the files, to be resolved and committed
+    const label = "origin/" + st.branch;
+    try {
+      await git.merge({ fs, dir, ours: st.branch, theirs: "refs/remotes/origin/" + st.branch, abortOnConflict: false, author: git_author(),
+        message: "Merge " + label + " into " + st.branch });
+    } catch (e) {
+      if (e && e.code === "MergeConflictError") {
+        git_merging_set(fs, { theirs, label });
+        git_save(pid);
+        git_take(git_tree_read(fs), t("git_conflicts", e.data.filepaths.join(", ")));
+        return;
+      }
+      throw e;
+    }
+    await git.checkout({ fs, dir, ref: st.branch, force: true });
     git_save(pid);
     git_take(git_tree_read(fs), t("git_pulled"));
+  }
+
+  // A merge given up: the files as HEAD has them again.
+  async function git_merge_abort(pid) {
+    const fs = await git_fs(pid);
+    const { git } = await git_lib();
+    const branch = await git.currentBranch({ fs, dir: "/" }).catch(() => null);
+    await git.checkout({ fs, dir: "/", ref: branch || "HEAD", force: true });
+    git_merging_set(fs, null);
+    git_save(pid);
+    git_take(git_tree_read(fs), t("git_merge_aborted"));
+  }
+
+  // One side of every conflict of a file, kept: in the editor (one Undo
+  // step) when the file is open, else straight.
+  function git_keep(name, side) {
+    const f = state.files.find((x) => x.name === name);
+    if (!f) {
+      return;
+    }
+    const next = git_resolve(f.text, side);
+    if (f === file_now()) {
+      ed_rewrite(next);
+    } else {
+      f.text = next;
+      store_save();
+    }
   }
 
   async function git_push(pid) {
     const fs = await git_fs(pid);
     const { git, http } = await git_lib();
     const st = await git_status(pid);
-    const r = await git.push({ fs, http, dir: "/", url: st.url, ref: st.branch, remoteRef: st.branch, ...git_net(st.url) });
+    if (!st.branch) {
+      throw new Error(t("git_pull_detached"));
+    }
+    let r;
+    try {
+      r = await git.push({ fs, http, dir: "/", url: st.url, ref: st.branch, remoteRef: st.branch, ...git_net(st.url) });
+    } catch (e) {
+      // origin moved on: pull (and merge) first
+      if (e && (e.code === "PushRejectedError" || /fast-forward|not a simple/i.test(e.message || ""))) {
+        throw new Error(t("git_push_behind"));
+      }
+      throw e;
+    }
     git_save(pid);
     if (r && r.ok === false) {
       throw new Error(r.error || "push refused");
@@ -502,10 +632,11 @@
       return;
     }
     const pid = state.id;
-    const body = el("div", { class: "form git" });
-    const close = sheet_open(t("git_title"), body);
+    const box = el("div", { class: "form git" });
+    const close = sheet_open(t("git_title"), box);
+    let gen = 0;
     const busy = (b, label) => {
-      for (const x of body.querySelectorAll("button")) {
+      for (const x of box.querySelectorAll("button")) {
         x.disabled = b;
       }
       if (label) {
@@ -524,8 +655,20 @@
         note.textContent = t("git_failed", (e && (e.data && e.data.statusCode ? "HTTP " + e.data.statusCode + " " : "") + e.message) || String(e));
       }
     };
+    // built aside, then put in place: of two paints at once (a change of
+    // the URL while another runs) only the latest shows
     const paint = async () => {
-      body.textContent = "";
+      const my = ++gen;
+      const body = document.createDocumentFragment();
+      try {
+        await paint_into(body);
+      } finally {
+        if (my === gen) {
+          box.replaceChildren(body);
+        }
+      }
+    };
+    const paint_into = async (body) => {
       let st;
       try {
         st = await git_status(pid);
@@ -540,11 +683,34 @@
           git_clone_form(close), note);
         return;
       }
+      // a merge under way: its conflicts, a side kept per file, Abort
+      if (st.merging) {
+        body.append(el("div", { class: "git-merging" },
+          el("b", { text: t("git_merging", st.merging.label) }), " ",
+          el("small", { text: st.merging.conflicts.length ? t("git_merging_hint", st.merging.conflicts.length) : t("git_merging_done") }),
+          ...st.merging.conflicts.map((name) => el("div", { class: "row git-conflict" },
+            el("span", { class: "grow", text: name }),
+            el("button", { class: "chip", type: "button", text: t("git_keep_mine"), onclick: () => { git_keep(name, "ours"); paint(); } }),
+            el("button", { class: "chip", type: "button", text: t("git_keep_theirs"), onclick: () => { git_keep(name, "theirs"); paint(); } }),
+            el("button", { class: "chip", type: "button", text: t("git_open"), onclick: () => {
+              const i = state.files.findIndex((f) => f.name === name);
+              close();
+              files_pick(i);
+              const at = state.files[i].text.indexOf("<<<<<<< ");
+              if (at >= 0) {
+                const head = state.files[i].text.slice(0, at);
+                ed_goto(head.split("\n").length, 1);
+              }
+            } }))),
+          el("div", { class: "row" }, el("button", { class: "btn danger", type: "button", text: t("git_merge_abort"),
+            onclick: () => run(async () => { await git_merge_abort(pid); }, t("git_working")) }))));
+      }
       // where it stands
       body.append(el("p", { class: "git-head" }, el("b", { text: st.branch || t("git_detached") }),
         " · " + (st.head ? st.head.slice(0, 7) : t("git_no_commit")) + (st.url ? " · " + st.url : "")));
       // changes and a commit
-      const msg = el("input", { type: "text", placeholder: t("git_msg_ph"), "aria-label": t("git_msg_ph") });
+      const msg = el("input", { type: "text", placeholder: t("git_msg_ph"), "aria-label": t("git_msg_ph"),
+        value: st.merging ? "Merge " + st.merging.label + " into " + (st.branch || "HEAD") : "" });
       // each change opens its diff against the last commit, before committing
       const review = async (only) => {
         const head = st.head ? await git_files_at(pid, st.head) : [];
@@ -558,7 +724,7 @@
           onclick: () => review(c.file) })), st.changed.length > 1 ? el("button", { class: "chip", type: "button", text: t("git_review"),
           onclick: () => review(null) }) : null) : null,
         el("div", { class: "row" }, msg, el("button", { class: "btn primary", type: "button", text: t("git_commit"),
-          disabled: st.changed.length === 0 && st.head !== null, onclick: () => {
+          disabled: st.changed.length === 0 && st.head !== null && !st.merging, onclick: () => {
             const m = msg.value.trim();
             if (m === "") {
               msg.focus();
