@@ -680,11 +680,20 @@ type), the goal after `⊢`, and a toolbar.
   fits. `zoom(id, n)` opens a line into its two halves, `zoom(id, 1)` gives a
   message whole, and `search(text)` finds messages. The chat lives in
   IndexedDB (database `bend-workshop`, store `chats`, by project id);
-  without it, for the page's life. A memory that could not be read (the
-  database out of reach for a moment) never overwrites a stored one; an
-  upgrade of the database blocked by a tab of an older page waits for it
-  (that tab closes its connection on `versionchange`) rather than giving
-  up; saves are per project and flushed when the page goes. The memory
+  without it, for the page's life. A memory knows the revision it was
+  read at and how many of its messages were stored then: a save reads and
+  writes in one transaction, and when the stored one moved on (another tab,
+  a tab restored after a crash) or this one was made while the database
+  was out of reach ("loose"), what was said here goes after what is stored
+  (`mem_sync`, `mem_merge`), never over it; only a replacement (an import,
+  Forget, its Undo: `mem_replace`) overwrites. Two opens at once share one
+  read, so the agent and the saves hold the same object (two reads used to
+  leave the agent writing to a copy that was never saved). A database
+  that could not be opened is tried again at the next request, a failed
+  save again after 5 s (12 times); an upgrade of the database blocked by a
+  tab of an older page waits for it (that tab closes its connection on
+  `versionchange`) rather than giving up; saves are per project and flushed
+  when the page goes. The memory
   belongs to the browser's origin: another address (a downloaded file, a
   new artifact of the viewer, a private window) starts with none, as it
   starts with no projects. The Agent tab's *Memory* view shows the
@@ -935,7 +944,9 @@ type), the goal after `⊢`, and a toolbar.
   past sessions after a reload), `agent_memory` (the view in each Claude
   call, zoom, the memory across sessions and a reload, merges through the
   quick tier past a small budget, the prompt cap, the Memory view and its
-  search, shallow and deep, forget and Undo), `agent_memory_api` (Haiku summaries with a simulated
+  search, shallow and deep, forget and Undo), `agent_memory_tabs` (a session in
+  each of two tabs on one project, both kept, after a reload too; a session
+  whose memory read failed, merged after what was stored), `agent_memory_api` (Haiku summaries with a simulated
   Anthropic server, a long turn started again from the memory),
   `agent_reasoning` (adaptive thinking and effort in the request, the
   thinking block sent back unchanged, its summary in the journal),

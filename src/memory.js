@@ -266,50 +266,158 @@ Name a minor item in a word or two rather than drop it. Copy names, numbers, pat
     return { found: out.length, messages: out };
   }
 
+  // Merging with what is stored
+  // ----------------------------
+  // A memory knows the revision it was read at (rev) and how many of its
+  // messages were stored then (base). When the stored one moved on in the
+  // meantime (another tab wrote it), or this one was made while the
+  // database was out of reach (loose), what was said here since goes after
+  // what is stored, rather than one overwriting the other. In place: the
+  // agent holds this very object.
+  function mem_merge(m, rec) {
+    const ours = m.loose ? m.msgs : m.msgs.slice(m.base || 0);
+    m.msgs = rec.msgs.slice();
+    m.nodes = Object.assign({}, rec.nodes || {});
+    m.view = (rec.view || []).map((x) => x.slice());
+    m.made = rec.made || 0;
+    for (const x of ours) {
+      mem_push(m, x.kind, x.text);
+      m.msgs[m.msgs.length - 1].t = x.t;
+    }
+    m.loose = false;
+    return m;
+  }
+
+  // What a flush writes over rec (what is stored: a record, or undefined
+  // for none): rec's revision moved on, or this memory is loose, and it
+  // merges first; replaced (an import, Forget, its Undo) overwrites.
+  function mem_sync(m, rec) {
+    const stored = rec && Array.isArray(rec.msgs) ? rec : null;
+    // if the write fails: what this memory then is, against what is stored
+    m.back = { rev: m.rev || 0, base: m.base || 0, loose: !!m.loose, replace: !!m.replace };
+    if (stored && !m.replace && (m.loose || (stored.rev || 0) !== (m.rev || 0))) {
+      mem_merge(m, stored);
+      m.back = { rev: stored.rev || 0, base: stored.msgs.length, loose: false, replace: false };
+    }
+    m.loose = false;
+    m.replace = false;
+    m.rev = (stored ? stored.rev || 0 : m.rev || 0) + 1;
+    m.base = m.msgs.length;
+    return { msgs: m.msgs, nodes: m.nodes, view: m.view, made: m.made, rev: m.rev };
+  }
+
   // Storage
   // -------
   // In IndexedDB, beside the past sessions (store chats, by project id);
   // without it, for the page's life only.
 
   // A memory that could not be read (the database out of reach for a
-  // moment) is "loose": it never overwrites a stored one, which would lose
-  // it; it is written only where nothing is stored yet.
-  const mem_store = { cache: new Map(), timers: new Map() };
+  // moment) is "loose": the next open reads again, and the first flush
+  // that reaches the database merges it after what is stored, never over
+  // it. Two opens at once share one read, so that the agent and the saves
+  // hold the same object.
+  const mem_store = { cache: new Map(), timers: new Map(), reading: new Map(), tries: new Map() };
 
-  async function mem_open(pid) {
-    if (mem_store.cache.has(pid)) {
-      return mem_store.cache.get(pid);
-    }
-    const rec = await ses_req("readonly", (st) => st.get(pid), "chats");
-    const m = rec && Array.isArray(rec.msgs) ? { msgs: rec.msgs, nodes: rec.nodes || {}, view: rec.view || [], made: rec.made || 0 } : mem_new();
-    if (rec === null) {
-      m.loose = true;
-    }
-    mem_store.cache.set(pid, m);
+  function mem_of(rec) {
+    const m = { msgs: rec.msgs, nodes: rec.nodes || {}, view: rec.view || [], made: rec.made || 0 };
+    m.rev = rec.rev || 0;
+    m.base = m.msgs.length;
     return m;
   }
 
-  function mem_save(pid) {
-    clearTimeout(mem_store.timers.get(pid));
-    mem_store.timers.set(pid, setTimeout(() => mem_flush(pid), 300));
+  function mem_open(pid) {
+    const have = mem_store.cache.get(pid);
+    if (have && !have.loose) {
+      return Promise.resolve(have);
+    }
+    if (mem_store.reading.has(pid)) {
+      return mem_store.reading.get(pid);
+    }
+    const go = ses_req("readonly", (st) => st.get(pid), "chats").then((rec) => {
+      mem_store.reading.delete(pid);
+      let m = mem_store.cache.get(pid);
+      const stored = rec && Array.isArray(rec.msgs) ? rec : null;
+      if (rec === null) {
+        if (!m) {
+          m = mem_new();
+          m.loose = true;
+        }
+      } else if (m && m.loose) {
+        // the database is back: what was said meanwhile goes after it
+        if (stored) {
+          mem_merge(m, stored);
+          m.rev = stored.rev || 0;
+          m.base = stored.msgs.length;
+          mem_save(pid);
+        } else {
+          m.loose = false;
+          m.rev = 0;
+          m.base = 0;
+        }
+      } else if (!m) {
+        m = stored ? mem_of(stored) : mem_new();
+      }
+      mem_store.cache.set(pid, m);
+      return m;
+    });
+    mem_store.reading.set(pid, go);
+    return go;
   }
 
-  async function mem_flush(pid) {
+  // A memory put in place of the project's (an import, Forget, its Undo):
+  // it overwrites what is stored.
+  function mem_replace(pid, m) {
+    m.replace = true;
+    mem_store.cache.set(pid, m);
+    return mem_flush(pid);
+  }
+
+  function mem_save(pid, ms = 300) {
+    clearTimeout(mem_store.timers.get(pid));
+    mem_store.timers.set(pid, setTimeout(() => mem_flush(pid), ms));
+  }
+
+  // The read and the write in one transaction, so that no other tab writes
+  // between them. Out of reach: tried again a little later, a few times.
+  function mem_flush(pid) {
     clearTimeout(mem_store.timers.get(pid));
     mem_store.timers.delete(pid);
     const m = mem_store.cache.get(pid);
     if (!m) {
-      return;
+      return Promise.resolve(false);
     }
-    if (m.loose) {
-      const rec = await ses_req("readonly", (st) => st.get(pid), "chats");
-      if (rec !== undefined) {
-        // stored already, or still out of reach: keep it as it is
+    return ses_db().then((db) => new Promise((done) => {
+      if (db === null) {
+        done(false);
         return;
       }
-      m.loose = false;
-    }
-    await ses_req("readwrite", (st) => st.put({ id: pid, msgs: m.msgs, nodes: m.nodes, view: m.view, made: m.made }), "chats");
+      try {
+        const tx = db.transaction("chats", "readwrite");
+        const st = tx.objectStore("chats");
+        m.back = null;
+        const get = st.get(pid);
+        get.onsuccess = () => {
+          st.put(Object.assign({ id: pid }, mem_sync(m, get.result)));
+        };
+        tx.oncomplete = () => done(true);
+        tx.onerror = tx.onabort = () => {
+          // not written: as it stands against what is stored, to try again
+          if (m.back) {
+            Object.assign(m, m.back);
+          }
+          done(false);
+        };
+      } catch (e) {
+        done(false);
+      }
+    })).then((ok) => {
+      const n = ok ? 0 : (mem_store.tries.get(pid) || 0) + 1;
+      mem_store.tries.set(pid, n);
+      if (!ok && n <= 12) {
+        mem_save(pid, 5000);
+      }
+      return ok;
+    });
   }
 
   // What waits to be written goes before the page does.
@@ -320,6 +428,5 @@ Name a minor item in a word or two rather than drop it. Copy names, numbers, pat
   });
 
   async function mem_forget(pid) {
-    mem_store.cache.set(pid, mem_new());
-    await ses_req("readwrite", (st) => st.delete(pid), "chats");
+    await mem_replace(pid, mem_new());
   }

@@ -1680,6 +1680,12 @@
         } catch (e) {
           done(null);
         }
+      }).then((db) => {
+        // out of reach this time: the next request tries again
+        if (db === null) {
+          ses.db = null;
+        }
+        return db;
       });
     }
     return ses.db;
@@ -1695,7 +1701,7 @@
         const tx = db.transaction(store, mode);
         const req = fn(tx.objectStore(store));
         tx.oncomplete = () => done(req ? req.result : true);
-        tx.onerror = () => done(null);
+        tx.onerror = tx.onabort = () => done(null);
       } catch (e) {
         done(null);
       }
@@ -2298,9 +2304,8 @@
         agent.mem = agent.proj === pid ? mem_store.cache.get(pid) : agent.mem;
         agent_paint();
         toast(t("mem_forgotten"), t("undo"), async () => {
-          mem_store.cache.set(pid, keep);
           agent.mem = agent.proj === pid ? keep : agent.mem;
-          await mem_flush(pid);
+          await mem_replace(pid, keep);
           agent_paint();
         });
       } })));

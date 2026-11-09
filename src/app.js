@@ -6077,8 +6077,7 @@
       git_from_zip(state.id, dotgit, state.files);
     }
     if (memo) {
-      mem_store.cache.set(state.id, memo);
-      mem_flush(state.id);
+      mem_replace(state.id, memo);
     }
   }
 
@@ -6090,8 +6089,7 @@
     if (memo) {
       const m = await mem_open(state.id);
       if (memo.msgs.length > m.msgs.length) {
-        mem_store.cache.set(state.id, memo);
-        mem_flush(state.id);
+        mem_replace(state.id, memo);
       }
     }
     if (same) {

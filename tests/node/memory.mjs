@@ -3,7 +3,7 @@
 import fs from "node:fs";
 const src = fs.readFileSync("src/memory.js", "utf8");
 const core = src.slice(0, src.indexOf("  // Storage"));
-const M = new Function(core + "\nreturn { mem_new, mem_push, mem_lines, mem_size, mem_pairs, mem_shrink, mem_zoom, mem_search, mem_text, mem_bytes, mem_name, MEM_NODE };")();
+const M = new Function(core + "\nreturn { mem_new, mem_push, mem_lines, mem_size, mem_pairs, mem_shrink, mem_zoom, mem_search, mem_text, mem_bytes, mem_name, mem_merge, mem_sync, MEM_NODE };")();
 let bad = 0;
 const expect = (label, cond, more) => { console.log((cond ? "ok  " : "BAD ") + label + (more !== undefined ? "  " + more : "")); if (!cond) bad++; };
 let calls = 0;
@@ -96,6 +96,45 @@ const ask = async (system, user) => {
   for (let i = 0; i < 2; i++) M.mem_push(m3, "tool", "v".repeat(600));
   await M.mem_shrink(m3, 10, async () => { throw { code: "http" }; }, 1, 1000);
   expect("no compactor: the halves cut to fit", M.mem_bytes(M.mem_text(m3, 1, 0)) <= M.MEM_NODE && M.mem_lines(m3).length === 1);
+}
+// stored and written: two tabs, a loose memory, a replacement, a failed write
+{
+  const clone = (x) => JSON.parse(JSON.stringify(x));
+  const say = (m, ...xs) => xs.forEach((x) => M.mem_push(m, "user", x));
+  let db = undefined;
+  const a = M.mem_new();
+  say(a, "a1");
+  db = clone(M.mem_sync(a, db));
+  expect("first write: rev 1, all stored", db.rev === 1 && a.base === 1 && db.msgs.length === 1);
+  const b = Object.assign(clone(db), { base: db.msgs.length });   // another tab reads it
+  say(b, "b1");
+  db = clone(M.mem_sync(b, db));
+  say(a, "a2");
+  db = clone(M.mem_sync(a, db));
+  expect("two tabs: neither loses the other's", db.msgs.map((x) => x.text).join(",") === "a1,b1,a2" && db.rev === 3, db.msgs.map((x) => x.text).join(","));
+  expect("the view covers every message", M.mem_lines(a).length === 3 && M.mem_lines(a)[2].startsWith("2+1|user: a2"));
+  say(a, "a3");
+  db = clone(M.mem_sync(a, db));
+  expect("same revision: written as it is", db.msgs.length === 4 && a.base === 4);
+  const l = M.mem_new();
+  l.loose = true;
+  say(l, "l1");
+  db = clone(M.mem_sync(l, db));
+  expect("a loose memory goes after what is stored", db.msgs.map((x) => x.text).join(",") === "a1,b1,a2,a3,l1" && !l.loose);
+  const r = M.mem_new();
+  r.replace = true;
+  say(r, "r1");
+  db = clone(M.mem_sync(r, db));
+  expect("a replacement overwrites", db.msgs.map((x) => x.text).join(",") === "r1" && !r.replace);
+  // a write that fails after a merge: back as merged, against what is stored
+  const c = Object.assign(clone(db), { base: 1 });
+  say(c, "c1");
+  const other = clone(db);
+  other.msgs.push({ kind: "user", text: "o1", t: 1 }); other.rev += 1;
+  M.mem_sync(c, other);
+  Object.assign(c, c.back);
+  const again = clone(M.mem_sync(c, other));
+  expect("a failed write, tried again: no message twice", again.msgs.map((x) => x.text).join(",") === "r1,o1,c1", again.msgs.map((x) => x.text).join(","));
 }
 if (bad) { console.log(bad + " failed"); process.exit(1); }
 console.log("memory ok");
