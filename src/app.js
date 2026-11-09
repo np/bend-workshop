@@ -3900,11 +3900,13 @@
         }
         decl.tail = " ⊢ " + claim.join(" ");
       } else {
-        const head = lines[i].replace(/:\s*(#.*)?$/, "");
-        const lt = head.indexOf("<");
-        const gt = lt < 0 ? -1 : angle_close(head, lt);
-        decl.params = gt < 0 ? [] : split_top(head.slice(lt + 1, gt));
-        decl.tail = head.replace(/^.*?\sis\s/, " is ");
+        // the header may run over several lines: type T<a,\n  b> is Data:
+        const flat = block.split("\n").map((l) => l.replace(/#.*$/, "")).join(" ").replace(/\s+/g, " ");
+        const lt = flat.indexOf("<");
+        const gt = lt < 0 || lt > flat.search(/\sis\s|:\s*$|$/) ? -1 : angle_close(flat, lt);
+        decl.params = gt < 0 ? [] : split_top(flat.slice(lt + 1, gt));
+        const head = (gt < 0 ? lines[i] : flat.slice(0, gt + 1) + flat.slice(gt + 1).replace(/:.*$/, "")).replace(/:\s*(#.*)?$/, "");
+        decl.tail = / is /.test(head) ? head.replace(/^.*?\sis\s/, " is ") : "";
         // a constructor starts its line; its fields may run over several
         // lines and hold braces of their own ({a == b : T})
         const body = lines.slice(i + 1, j).map((l) => l.replace(/#.*$/, "")).join("\n");
@@ -3996,7 +3998,9 @@
       return null;
     }
     const line = text.slice(0, pos).split("\n").length;
-    const defs = decls_of(file).filter((d) => d.kind === "def" && d.line <= line);
+    // a def's parameters, a type's (its constructors' fields name them),
+    // a law's ("for" lines)
+    const defs = decls_of(file).filter((d) => (d.kind === "def" || d.kind === "type" || d.kind === "law") && d.line <= line);
     const d = defs[defs.length - 1];
     if (!d || line >= d.line + d.text.split("\n").length) {
       return null;
@@ -4006,7 +4010,7 @@
       return null;
     }
     let shown = d.params[i];
-    if (!shown.includes(":")) {
+    if (!shown.includes(":") && d.kind === "def") {
       const law = resolve(d.name, file, text);
       if (law && law.kind === "law" && law.params[i] !== undefined) {
         shown = name + ": " + law.params[i].replace(/^[^:]*:\s*/, "");
@@ -4142,6 +4146,13 @@
   // One line for a declaration, the argument at hand in bold.
   function sig_html(d, active) {
     if (d.kind === "param") {
+      // called: its function type, the argument at hand in bold
+      const colon = d.shown.indexOf(":");
+      const parts = colon < 0 ? [] : arrow_parts(d.shown.slice(colon + 1).trim());
+      if (active >= 0 && active < parts.length - 1) {
+        return highlight(d.shown.slice(0, colon + 1)) + " " + parts.map((x, i) =>
+          i === active ? "<b class=\"arg\">" + highlight(x) + "</b>" : highlight(x)).join(highlight(" -> "));
+      }
       return highlight(d.shown);
     }
     if (d.kind === "op") {
@@ -4155,6 +4166,32 @@
     const word = d.kind === "ctor" ? "" : "<span class=\"tk-kw\">" + d.kind + "</span> ";
     const list = d.kind === "type" && d.params.length === 0 ? "" : esc(open) + args + esc(shut);
     return word + "<span class=\"tk-def\">" + esc(d.name) + "</span>" + list + highlight(d.tail);
+  }
+
+  // A function type's parts at its top-level arrows: A -> B -> C gives
+  // [A, B, C]; arrows inside brackets (an argument that is a function) stay.
+  function arrow_parts(ty) {
+    const out = [];
+    let depth = 0;
+    let from = 0;
+    for (let i = 0; i < ty.length; i++) {
+      const c = ty[i];
+      if ("([{".includes(c)) {
+        depth++;
+      } else if (")]}".includes(c)) {
+        depth--;
+      } else if (c === "<" && /[\w.]/.test(ty[i - 1] || "") && !/[-=>&]/.test(ty[i + 1] || "")) {
+        depth++;
+      } else if (c === ">" && ty[i - 1] !== "-" && ty[i - 1] !== "=" && ty[i - 1] !== "&" && depth > 0) {
+        depth--;
+      } else if (depth === 0 && ty.startsWith("->", i)) {
+        out.push(ty.slice(from, i).trim());
+        from = i + 2;
+        i++;
+      }
+    }
+    out.push(ty.slice(from).trim());
+    return out;
   }
 
   function sig_source(d) {
@@ -4241,7 +4278,10 @@
     const call = call_at(text, pos);
     if (call) {
       // a type's arguments live in < >; a type-level def's, like IO(A), in ( )
-      const d = call.angle ? resolve(call.name, file, text, "type") : resolve(call.name, file, text);
+      // a parameter of the def around the caret, called (a function, a
+      // motive, a continuation), comes before a declaration of that name
+      const d = call.angle ? resolve(call.name, file, text, "type")
+        : (!call.brace && param_at(call.name, file, text, pos)) || resolve(call.name, file, text);
       if (d && (d.kind === "ctor") === call.brace) {
         // the short form leaves the leading quantity binders out: List<U32> for List<&2, U32>
         let skip = 0;

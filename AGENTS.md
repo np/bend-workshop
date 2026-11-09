@@ -397,7 +397,16 @@ type), the goal after `⊢`, and a toolbar.
 - **Lookup order.** Names resolve in this order: the file's own declarations,
   then an import alias (workspace file or hub module, relative imports inside
   a package included), then Base. A parameter of the enclosing def takes its
-  type from the law when the def is untyped.
+  type from the law when the def is untyped. A parameter called (a
+  function, a motive, a continuation: `f(x, w)`, `P(a)`, `k(s)`, which
+  proof code does all the time) comes before any declaration of its name,
+  and shows its arrow type with the argument at hand in bold
+  (`arrow_parts`); a type's parameters count too, called in its
+  constructors, and a law's `for` names. A type's header may run over
+  several lines, its parameters read from the whole block. Measured on
+  Bend's demos and evals (a caret inside every call): before, a call of a
+  parameter showed nothing, which is why whole proof functions seemed to
+  have no signatures; after, only names bound by a lambda miss.
 - **Operators.** An operator resolves through the infix table of `bend.ts`
   (`Core.INFIX`). `+ - * / %`, bit operations, shifts and comparisons call
   `T.verb` for the `T` of the annotation `(… : T)` around them; `&& || ++ <>`
@@ -930,7 +939,8 @@ type), the goal after `⊢`, and a toolbar.
   parameters' order), `find_comment`, `find_browser` (the editor stays where a find took it
   when its bar closes), `sig_types` (type parameters marked, kinds with
   `<&>`, a type's sheet), `autoindent` (Enter after brackets, desktop and
-  touch), `project_versions` (the id in the
+  touch), `sig_params` (a parameter called, its arrow type, the
+  argument bold; a type's parameters over a two-line header), `project_versions` (the id in the
   zip, a version imported, Undo, a snapshot exported, diffs, an unknown
   id kept), `todo_goals` (`?TODO` cards, no snippet during the agent), `lawdef_pong`, `operators`, `opcalls`,
   `sigs_marks_lawdef_ai`, `refactors` (caret per file across a reload, an
@@ -1043,5 +1053,5 @@ type), the goal after `⊢`, and a toolbar.
   refuses the move, and says why). An annotation `(x + y : Shape)` in a file
   that keeps `Shape.add` while `Shape` moves away no longer finds the def:
   the check refuses that move too.
-- **Signatures do not cover locals.** Variables bound by `let` or patterns show
-  no type; a `?hole` gives the context.
+- **Signatures do not cover locals.** Variables bound by `let`, patterns or
+  a lambda (`fx => fx(b)`) show no type; a `?hole` gives the context.
