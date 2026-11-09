@@ -3317,8 +3317,53 @@
         break;
       }
     }
+    if (out.length === 0 && f) {
+      // a type the checker names through a module the file reaches only
+      // through others (hub modules too): its constructors, from the
+      // module that declares it, with the import they need
+      const far = ctors_far(head, file, f.text, imps);
+      if (far) {
+        return far;
+      }
+    }
     out.imp = out.length > 0 ? imp : null;
     return out;
+  }
+
+  function ctors_far(head, file, text, imps) {
+    const parts = head.split(".");
+    const name = parts.pop();
+    const qual = parts.join(".");
+    const seen = new Set([file]);
+    const todo = [...imps.values()];
+    while (todo.length > 0) {
+      const mod = todo.shift();
+      if (seen.has(mod)) {
+        continue;
+      }
+      seen.add(mod);
+      const decls = decls_of(mod);
+      const stem = mod.replace(/^hub:/, "").replace(/\.bend$/, "").replace(/\//g, ".");
+      const ctors = decls.filter((d) => d.kind === "ctor" && d.of === name);
+      if (ctors.length > 0 && (qual === "" || stem === qual || stem.endsWith("." + qual) || [...imps.keys()].includes(qual))) {
+        const alias = [...imps].find(([, v]) => v === mod);
+        let prefix = alias ? alias[0] + "." : "";
+        let imp = null;
+        if (!alias) {
+          const a = mv_alias(text, file, mv_stem_alias(mod.replace(/^hub:/, "")));
+          prefix = a + ".";
+          imp = "import " + (mod.startsWith("hub:") ? mod.slice(4) : mv_relpath(file, mod)) + " as " + a;
+        }
+        const out = ctors.map((d) => ({ name: prefix + d.name, params: d.params }));
+        out.imp = imp;
+        return out;
+      }
+      const src = mod.startsWith("hub:") ? hub.files[mod.slice(4)] : (state.files.find((x) => x.name === mod) || {}).text;
+      if (typeof src === "string") {
+        todo.push(...imports_of(mod, src).values());
+      }
+    }
+    return null;
   }
 
   // The editor's text with an import added after its last one, through the
@@ -3767,9 +3812,14 @@
         const gt = lt < 0 ? -1 : angle_close(head, lt);
         decl.params = gt < 0 ? [] : split_top(head.slice(lt + 1, gt));
         decl.tail = head.replace(/^.*?\sis\s/, " is ");
-        for (const l of lines.slice(i + 1, j)) {
-          for (const c of l.matchAll(/(^|\s)([A-Z][\w.]*)\{([^{}]*)\}/g)) {
-            out.push({ name: c[2], kind: "ctor", file, line: i + 1, of: m[3], params: split_top(c[3]),
+        // a constructor starts its line; its fields may run over several
+        // lines and hold braces of their own ({a == b : T})
+        const body = lines.slice(i + 1, j).map((l) => l.replace(/#.*$/, "")).join("\n");
+        for (const c of body.matchAll(/(^|\n)[ \t]+([A-Z][\w.]*)[ \t]*\{/g)) {
+          const open = c.index + c[0].length - 1;
+          const shut = close_of(body, open);
+          if (shut > 0) {
+            out.push({ name: c[2], kind: "ctor", file, line: i + 1, of: m[3], params: split_top(body.slice(open + 1, shut).replace(/\s+/g, " ").trim()),
               tail: "", doc: t("ctor_of", m[3]), text: block });
           }
         }
