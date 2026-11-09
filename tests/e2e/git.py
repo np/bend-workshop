@@ -31,7 +31,7 @@ def wait_note_clear(page, t=20):
         if page.locator(".git-note").count() and not page.inner_text(".git-note").strip(): return
         time.sleep(0.2)
 def commit(page, msg):
-    page.fill(".git input[placeholder='What changed']", msg)
+    page.fill(".git textarea.git-msg", msg)
     page.locator(".git .btn", has_text="Commit").click(); time.sleep(0.6); wait_note_clear(page)
 def settings_git(page, **kv):
     page.click("#btn-settings"); time.sleep(0.3)

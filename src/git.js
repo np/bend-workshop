@@ -157,7 +157,8 @@
     return { promises, mkdirs, dump: dump_now, under, files, dirs, norm };
   }
 
-  const gitst = { lib: null, fs: new Map(), timers: new Map() };
+  // skip: per project, the changed files left out of the next commit
+  const gitst = { lib: null, fs: new Map(), timers: new Map(), skip: new Map() };
 
   // The library, unpacked and run the first time it is needed.
   async function git_lib() {
@@ -382,20 +383,37 @@
     return fs;
   }
 
-  async function git_commit(pid, message) {
+  // A commit of the changes, but those in skip (file names): these stay
+  // as the last commit has them in the index, and changed in the project.
+  async function git_commit(pid, message, skip = new Set()) {
     const fs = await git_fs(pid);
     const { git } = await git_lib();
     const dir = "/";
     git_tree_write(fs, state.files);
-    for (const [file, , w] of await git.statusMatrix({ fs, dir })) {
-      if (w === 0) {
+    const merging = git_merging(fs);
+    if (merging) {
+      // a merge commits everything
+      skip = new Set();
+    }
+    let taken = 0;
+    for (const [file, h, w, i] of await git.statusMatrix({ fs, dir })) {
+      if (skip.has(file)) {
+        if (h !== i || w !== i) {
+          await git.resetIndex({ fs, dir, filepath: file });
+        }
+      } else if (w === 0) {
         await git.remove({ fs, dir, filepath: file });
+        taken += h === 1 ? 1 : 0;
       } else {
         await git.add({ fs, dir, filepath: file });
+        taken += h === 1 && w === 1 ? 0 : 1;
       }
     }
+    const head0 = await git.resolveRef({ fs, dir, ref: "HEAD" }).catch(() => null);
+    if (taken === 0 && head0 !== null && !merging) {
+      throw new Error(t("git_nothing_picked"));
+    }
     // ending a merge: both parents, once no conflict is left
-    const merging = git_merging(fs);
     if (merging && state.files.some((f) => git_conflicted(f.text))) {
       throw new Error(t("git_still_conflicts"));
     }
@@ -753,8 +771,23 @@
       body.append(el("p", { class: "git-head" }, el("b", { text: st.branch || t("git_detached") }),
         " · " + (st.head ? st.head.slice(0, 7) : t("git_no_commit")) + (st.url ? " · " + st.url : "")));
       // changes and a commit
-      const msg = el("input", { type: "text", placeholder: t("git_msg_ph"), "aria-label": t("git_msg_ph"),
-        value: st.merging ? "Merge " + st.merging.label + " into " + (st.branch || "HEAD") : "" });
+      // the message: a summary line, then as many lines as it takes
+      const msg = el("textarea", { class: "git-msg", rows: "3", placeholder: t("git_msg_ph"), "aria-label": t("git_msg_ph"),
+        spellcheck: "true" });
+      msg.value = gitst.draft && gitst.draft.pid === pid ? gitst.draft.text
+        : st.merging ? "Merge " + st.merging.label + " into " + (st.branch || "HEAD") : "";
+      msg.addEventListener("input", () => {
+        gitst.draft = { pid, text: msg.value };
+      });
+      // which changes go in: all, unless unticked (kept across repaints)
+      const skip = gitst.skip.get(pid) || new Set();
+      gitst.skip.set(pid, skip);
+      for (const f of [...skip]) {
+        if (!st.changed.some((c) => c.file === f)) {
+          skip.delete(f);
+        }
+      }
+      const picked = () => st.changed.filter((c) => !skip.has(c.file)).length;
       // each change opens its diff against the last commit, before committing
       const review = async (only) => {
         const head = st.head ? await git_files_at(pid, st.head) : [];
@@ -762,24 +795,79 @@
         diff_sheet(only ? t("git_diff_file", only) : t("git_diff_all"), head.filter(([n]) => want(n)),
           state.files.filter((f) => want(f.name)).map((f) => [f.name, f.text]));
       };
-      body.append(el("div", { class: "field" }, el("span", { text: t("git_changes", st.changed.length) }),
-        st.changed.length ? el("div", { class: "git-changes" }, ...st.changed.map((c) => el("button", { class: "chip git-" + c.kind,
+      const count = el("span", {});
+      const commit = el("button", { class: "btn primary", type: "button", text: t("git_commit") });
+      const sync = () => {
+        const n = picked();
+        count.textContent = st.changed.length > 0 && n < st.changed.length && !st.merging
+          ? t("git_changes_picked", n, st.changed.length) : t("git_changes", st.changed.length);
+        commit.disabled = (st.changed.length === 0 || n === 0) && st.head !== null && !st.merging;
+      };
+      const go = () => {
+        // trailing spaces off each line, blank lines off both ends
+        const m = msg.value.split("\n").map((l) => l.replace(/\s+$/, "")).join("\n").replace(/^\n+|\n+$/g, "");
+        if (m === "") {
+          msg.focus();
+          note.textContent = t("git_msg_needed");
+          return;
+        }
+        run(async () => {
+          await git_commit(pid, m + "\n", st.merging ? new Set() : new Set(skip));
+          gitst.draft = null;
+          toast(t("git_committed"));
+        }, t("git_working"));
+      };
+      commit.addEventListener("click", () => {
+        if (!commit.disabled) {
+          go();
+        }
+      });
+      msg.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+          e.preventDefault();
+          commit.click();
+        }
+      });
+      const rows = st.changed.map((c) => {
+        const box = el("input", { type: "checkbox", "aria-label": t("git_pick_file", c.file), disabled: !!st.merging });
+        box.checked = !skip.has(c.file);
+        box.addEventListener("change", () => {
+          if (box.checked) {
+            skip.delete(c.file);
+          } else {
+            skip.add(c.file);
+          }
+          sync();
+        });
+        return el("div", { class: "git-change" }, box, el("button", { class: "chip git-" + c.kind,
           type: "button", title: t("git_diff_file", c.file), text: (c.kind === "new" ? "+ " : c.kind === "gone" ? "− " : "~ ") + c.file,
-          onclick: () => review(c.file) })), st.changed.length > 1 ? el("button", { class: "chip", type: "button", text: t("git_review"),
-          onclick: () => review(null) }) : null) : null,
-        el("div", { class: "row" }, msg, el("button", { class: "btn primary", type: "button", text: t("git_commit"),
-          disabled: st.changed.length === 0 && st.head !== null && !st.merging, onclick: () => {
-            const m = msg.value.trim();
-            if (m === "") {
-              msg.focus();
-              note.textContent = t("git_msg_needed");
-              return;
-            }
-            run(async () => {
-              await git_commit(pid, m);
-              toast(t("git_committed"));
-            }, t("git_working"));
-          } }))));
+          onclick: () => review(c.file) }));
+      });
+      const all = st.changed.length > 1 && !st.merging ? el("button", { class: "chip", type: "button", text: t("git_pick_all"), onclick: () => {
+        const none = picked() > 0;
+        for (const c of st.changed) {
+          if (none) {
+            skip.add(c.file);
+          } else {
+            skip.delete(c.file);
+          }
+        }
+        rows.forEach((r) => {
+          r.firstChild.checked = !none;
+        });
+        all.textContent = none ? t("git_pick_all") : t("git_pick_none");
+        sync();
+      } }) : null;
+      if (all) {
+        all.textContent = picked() > 0 ? t("git_pick_none") : t("git_pick_all");
+      }
+      sync();
+      body.append(el("div", { class: "field" }, count,
+        st.changed.length ? el("div", { class: "git-changes" }, ...rows,
+          el("div", { class: "row" }, all, st.changed.length > 1 ? el("button", { class: "chip", type: "button", text: t("git_review"),
+            onclick: () => review(null) }) : null)) : null,
+        msg, el("small", { class: "dim", text: t("git_msg_hint") }),
+        el("div", { class: "row" }, commit)));
       // branches
       const name = el("input", { type: "text", placeholder: t("git_branch_ph"), "aria-label": t("git_branch_ph"), autocapitalize: "off" });
       body.append(el("div", { class: "field" }, el("span", { text: t("git_branches") }),
@@ -832,7 +920,10 @@
         list.append(el("div", { class: "git-commit" + (here ? " here" : "") + (hist.mine.has(c.oid) ? "" : " other") },
           el("span", { class: "git-oid", text: c.oid.slice(0, 7) }),
           el("span", { class: "git-what" }, ...badges, el("b", { text: c.commit.message.split("\n")[0] }),
-            el("small", { text: " " + c.commit.author.name + ", " + when(c.commit.author.timestamp * 1000) })),
+            el("small", { text: " " + c.commit.author.name + ", " + when(c.commit.author.timestamp * 1000) }),
+            // the message's body, folded
+            c.commit.message.trim().includes("\n") ? el("details", { class: "git-body" }, el("summary", { text: t("git_msg_more") }),
+              el("pre", { text: c.commit.message.trim().split("\n").slice(1).join("\n").replace(/^\n+/, "") })) : ""),
           el("span", { class: "snap-acts" },
             el("button", { class: "chip", type: "button", text: t("snap_diff"), onclick: async () => {
               const a = await git_files_at(pid, parent);

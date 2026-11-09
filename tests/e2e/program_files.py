@@ -121,7 +121,7 @@ with sync_playwright() as p:
     page.locator(".git .btn", has_text="Create a repository").click(); time.sleep(1.5)
     changed = page.inner_text(".git-changes")
     check("git sees data files and project.json", "test/data/in.txt" in changed and ".workshop/project.json" in changed, changed)
-    page.fill(".git input[placeholder='What changed']", "with data")
+    page.fill(".git textarea.git-msg", "with data")
     page.locator(".git .btn", has_text="Commit").click(); time.sleep(1.5)
     check("committed", "No change" in page.inner_text(".git"), page.inner_text(".git")[:300])
     page.click(".sheet-head button"); time.sleep(0.2)

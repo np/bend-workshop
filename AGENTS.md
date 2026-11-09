@@ -526,7 +526,13 @@ type), the goal after `⊢`, and a toolbar.
   sources are.
 - **Local.** *Create a repository* (branch `main`), the changes since the
   last commit (new, changed, gone; each opens its diff against the last
-  commit, *Review all* every one, before committing), *Commit* with a message (the author
+  commit, *Review all* every one, before committing), each with a box: an
+  unticked one stays out of the commit (its index entry reset to the last
+  commit's) and changed in the project, and stays unticked until ticked
+  again (*Tick all* / *Untick all*; a merge commits everything); *Commit*
+  with a message over as many lines as it takes (a summary line, then the
+  details; Ctrl+Enter commits; the draft kept while the sheet repaints),
+  the history showing its first line and the rest folded (the author
   from Settings, else "Bend workshop"); the history of the whole
   repository, as VS Code's graph lists it: the commits of HEAD, of every
   branch and of every `origin/…` branch, merged, newest first (100 at
@@ -936,7 +942,9 @@ type), the goal after `⊢`, and a toolbar.
   refusing pages, through a proxy), `git_merge` (a push refused while
   origin is ahead, a pull merging with a conflict, Keep mine, the merge
   commit with two parents pushed, a fast-forward, an abort; an empty
-  remote: push, fetch, pull), `program_files` (argument sets and data
+  remote: push, fetch, pull), `git_pick` (a change left out of a commit,
+  a message over several lines, read whole by real git, at 360 px),
+  `program_files` (argument sets and data
   files in Settings at 360 px, a run reading `test/data`, writing a text
   and a binary file: links, download, Keep; the agent's `list_args` and
   `run` with a set and with arguments, text and hexdump; the commit, the

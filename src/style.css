@@ -1573,3 +1573,13 @@ button.goal-name { text-decoration: underline; text-underline-offset: 3px; }
 .out-file { margin: 4px 0; overflow-wrap: anywhere; }
 .out-file a { font-family: var(--mono, monospace); }
 .out-file-text { white-space: pre-wrap; max-height: 40vh; overflow: auto; margin: 4px 0; }
+
+/* git: which changes go in the commit; the message over several lines */
+.git-change { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.git-change input { flex: none; width: 20px; height: 20px; margin: 0; }
+.git-change .chip { min-width: 0; overflow-wrap: anywhere; text-align: left; }
+.git-msg { width: 100%; box-sizing: border-box; min-height: 4.5em; resize: vertical; font: inherit; }
+.git-body { margin-top: 2px; }
+.git-body pre { white-space: pre-wrap; margin: 2px 0 0; font-size: 0.9em; }
+.git-changes { flex-direction: column; align-items: stretch; }
+.git-changes > .row { gap: 4px; }

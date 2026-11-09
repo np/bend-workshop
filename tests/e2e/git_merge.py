@@ -37,7 +37,7 @@ def btn(page, text, wait=1.5):
     page.locator(".git .btn", has_text=text).first.click(); time.sleep(wait)
 def note(page): return page.inner_text(".git-note")
 def commit(page, msg=None):
-    if msg: page.fill(".git input[placeholder='What changed']", msg)
+    if msg: page.fill(".git textarea.git-msg", msg)
     btn(page, "Commit")
 
 with sync_playwright() as p:
