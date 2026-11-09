@@ -271,7 +271,15 @@ targets, all pure TypeScript, so all within the page's reach:
 - **Layers.** A transparent `<textarea>` sits over a highlighted `<pre>` and a
   marks layer that underlines the exact error span. Line height is an integer
   in pixels, so the layers never drift. iOS gets a 3 px padding correction.
-- **Typing.** Enter auto-indents after `:`. Tab and Shift-Tab shift by 2.
+- **Typing.** Enter auto-indents (`newline_indent`): two more after `:`;
+  after an open bracket `(` `[` `{` (a definition's parameters, a
+  constructor's fields, a list), its line's indentation and two more, and
+  between a bracket and its closer the closer goes on a line of its own at
+  the opening line's indentation; inside a bracket with something after
+  it on its line, under that first thing; after a line that closed
+  brackets opened above, the indentation of the line they opened on.
+  Brackets in comments and strings do not count; the scan starts at the
+  declaration around the caret. One `insertText`, so one Undo. Tab and Shift-Tab shift by 2.
   Smart quotes and dashes from phone keyboards are turned back into ASCII. The
   key bar inserts through `execCommand`, so undo keeps working.
 - **Caret per file.** Each file keeps where the caret was and how far the
@@ -915,7 +923,8 @@ type), the goal after `⊢`, and a toolbar.
   (scroll and typing kept across repaints), `copy_match` (Ctrl+Z, the
   parameters' order), `find_comment`, `find_browser` (the editor stays where a find took it
   when its bar closes), `sig_types` (type parameters marked, kinds with
-  `<&>`, a type's sheet), `project_versions` (the id in the
+  `<&>`, a type's sheet), `autoindent` (Enter after brackets, desktop and
+  touch), `project_versions` (the id in the
   zip, a version imported, Undo, a snapshot exported, diffs, an unknown
   id kept), `todo_goals` (`?TODO` cards, no snippet during the agent), `lawdef_pong`, `operators`, `opcalls`,
   `sigs_marks_lawdef_ai`, `refactors` (caret per file across a reload, an

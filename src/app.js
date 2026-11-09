@@ -772,13 +772,106 @@
   function ed_newline() {
     const v = ed.ta.value;
     const a = ed.ta.selectionStart;
-    const from = v.lastIndexOf("\n", a - 1) + 1;
-    const head = v.slice(from, a);
+    const b = ed.ta.selectionEnd;
+    const got = newline_indent(v, a, b);
+    if (got.close !== null) {
+      // between a bracket and its closer: the closer goes on a line of its
+      // own, at the opening line's indentation, the caret between
+      ed_insert("\n" + got.ind + "\n" + got.close);
+      const at = ed.ta.selectionStart - got.close.length - 1;
+      ed.ta.setSelectionRange(at, at);
+      return;
+    }
+    ed_insert("\n" + got.ind);
+  }
+
+  // The brackets ( [ { left open before pos, innermost last, each with its
+  // offset, outside comments and strings.
+  function open_brackets(v, pos) {
+    // from the declaration around pos: the last line at column 0 that
+    // starts a thing of its own (not a closing bracket)
+    let from = pos;
+    for (;;) {
+      from = v.lastIndexOf("\n", from - 1);
+      if (from < 0) {
+        from = 0;
+        break;
+      }
+      if (/^[^\s)\]}#]/.test(v.slice(from + 1, from + 2))) {
+        from += 1;
+        break;
+      }
+    }
+    const stack = [];
+    for (let i = from; i < pos; i++) {
+      const c = v[i];
+      if (c === "#") {
+        const nl = v.indexOf("\n", i);
+        i = nl < 0 || nl >= pos ? pos : nl;
+      } else if (c === "\"") {
+        for (i++; i < pos && v[i] !== "\"" && v[i] !== "\n"; i++) {
+          if (v[i] === "\\") {
+            i++;
+          }
+        }
+      } else if ("([{".includes(c)) {
+        stack.push(i);
+      } else if (")]}".includes(c) && stack.length > 0) {
+        stack.pop();
+      }
+    }
+    return stack;
+  }
+
+  // What Enter at pos writes after the line break: its indentation, and a
+  // closer to put on a line of its own (the caret was between a bracket
+  // and its closer), or null.
+  //  - Right after an open bracket: the bracket's line indentation and two
+  //    more (a definition's parameters, a constructor's fields, a list).
+  //  - Inside a bracket with something after it on its line: under the
+  //    first thing after the bracket.
+  //  - A line that closed brackets opened above: the indentation of the
+  //    line they opened on.
+  //  - After a line ending in ":", two more.
+  function newline_indent(v, pos, end = pos) {
+    const from = v.lastIndexOf("\n", pos - 1) + 1;
+    const head = v.slice(from, pos);
+    const indent_at = (k) => {
+      const ls = v.lastIndexOf("\n", k - 1) + 1;
+      return /^ */.exec(v.slice(ls))[0];
+    };
+    const PAIR = { "(": ")", "[": "]", "{": "}" };
+    const open = open_brackets(v, pos);
+    if (open.length > 0) {
+      const at = open[open.length - 1];
+      const after = v.slice(at + 1, pos);
+      const line_end = v.indexOf("\n", at);
+      const rest = v.slice(at + 1, line_end < 0 || line_end > pos ? pos : line_end).replace(/#.*$/, "");
+      if (rest.trim() === "" || after.trim() === "") {
+        const base = indent_at(at);
+        const next = v.slice(end).match(/^[ \t]*(.)/);
+        const close = next && next[1] === PAIR[v[at]] && after.trim() === "" ? "" : null;
+        if (close !== null) {
+          // the closer and what follows it move down with the caret
+          return { ind: base + "  ", close: base };
+        }
+        return { ind: base + "  ", close: null };
+      }
+      // under the first thing after the bracket
+      const ls = v.lastIndexOf("\n", at - 1) + 1;
+      const col = at - ls + 1 + /^ */.exec(rest)[0].length;
+      return { ind: " ".repeat(col), close: null };
+    }
     let ind = /^ */.exec(head)[0];
+    const before = open_brackets(v, from);
+    if (before.length > 0) {
+      // this line closed brackets opened above: back to where they opened
+      ind = indent_at(before[0]);
+    }
     if (/:\s*(#.*)?$/.test(head) && !/^\s*#/.test(head)) {
       ind += "  ";
     }
-    ed_insert("\n" + ind);
+    return { ind, close: null };
   }
 
   // Shifts the selected lines (or the caret's line) by two spaces.
