@@ -62,7 +62,7 @@ with sync_playwright() as p:
     # a deflated zip made elsewhere, with a top folder and junk
     tmp = os.path.join(tempfile.mkdtemp(), "tri.zip")
     with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zz:
-        for n in ["main.bend", "LAWS.bend", "PROOF.bend"]:
+        for n in sorted(f for f in os.listdir("../bend/demos/proof_insertion_sort") if f.endswith(".bend")):
             zz.write("../bend/demos/proof_insertion_sort/" + n, "tri/" + n)
         zz.writestr("tri/README.md", "x"); zz.writestr("__MACOSX/._main.bend", "x")
     page.click("#btn-proj")

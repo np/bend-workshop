@@ -1,9 +1,9 @@
-import time, json
+import time, json, os
 from playwright.sync_api import sync_playwright
 from serve import serve, shot, fixture, frame_page
 serve("dist", 8123)
 root = "../bend/demos/app_pong_game_2d/"
-files = [{"name": n, "text": open(root + n).read()} for n in ["main.bend", "LAWS.bend", "PROOF.bend"]]
+files = [{"name": n, "text": open(root + n).read()} for n in ["main.bend", "LAWS.bend", "PROOF.bend"] + sorted(set(f for f in os.listdir(root) if f.endswith(".bend")) - {"main.bend", "LAWS.bend", "PROOF.bend"})]
 with sync_playwright() as p:
     b = p.chromium.launch()
     page = b.new_context(viewport={"width": 1280, "height": 800}, locale="en-US").new_page()

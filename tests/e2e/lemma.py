@@ -43,7 +43,7 @@ with sync_playwright() as p:
 
     # 3. in PROOF.bend of the sort demo: imported names, a function hypothesis
     root = "../bend/demos/proof_insertion_sort"
-    files = [{"name": n, "text": open(root + "/" + n).read()} for n in ["main.bend", "LAWS.bend", "PROOF.bend"]]
+    files = [{"name": n, "text": open(root + "/" + n).read()} for n in ["main.bend", "LAWS.bend", "PROOF.bend"] + sorted(set(f for f in os.listdir(root) if f.endswith(".bend")) - {"main.bend", "LAWS.bend", "PROOF.bend"})]
     files[2]["text"] = files[2]["text"].replace("      (lh, rec(st, e))", "      ?here")
     page2 = b.new_context(viewport={"width": 1280, "height": 800}, locale="en-US").new_page()
     page2.on("pageerror", lambda e: errs.append(str(e)))
