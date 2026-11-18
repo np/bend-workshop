@@ -11,7 +11,13 @@ const pick = (needle) => {
 };
 const read = (p) => fs.readFileSync(R + "/" + p, "utf8");
 const one = (text) => [{ name: "main.bend", text }];
-const demo = (d, names) => names.map((n) => ({ name: n, text: read("demos/" + d + "/" + n) }));
+// A demo's files: those named first, in that order, then every other .bend
+// file of its folder (a demo that grows a file, SPEC.bend in 2.0.40, keeps
+// working here).
+const demo = (d, names) => {
+  const all = fs.readdirSync(R + "/demos/" + d).filter((n) => n.endsWith(".bend")).sort();
+  return names.concat(all.filter((n) => !names.includes(n))).map((n) => ({ name: n, text: read("demos/" + d + "/" + n) }));
+};
 
 const mods = pick("# math.bend");
 const math = mods.replace(/^# math\.bend\n/, "");

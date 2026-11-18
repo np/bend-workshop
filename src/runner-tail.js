@@ -1,13 +1,11 @@
 // The workshop's display: these declarations follow the compiled program, so
 // they win over its own io_exit, and hand its Window effects to the page.
 // Since 2.0.37 an effect is a plain function in $0eff, called with its
-// arguments then its continuation; one that waits parks itself.
-function io_exit(main, show) {
+// arguments then its continuation; one that waits parks itself. Since
+// 2.0.40 io_exit takes main alone: a pure main's value is printed by Bend
+// code the compiler adds, so every main runs through the IO loop.
+function io_exit(main) {
   try {
-    if (show !== null) {
-      io_out(1, io_bytes(show_val(show, 0, run_loop(main()), 0) + "\n"));
-      process.exit(0);
-    }
     $0eff["Window.open"] = function (title, width, height) {
       return __display.open(title, width, height);
     };

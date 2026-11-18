@@ -1675,8 +1675,9 @@
 
   function screen_point(e) {
     const r = scr.canvas.getBoundingClientRect();
-    const clip = (v, most) => Math.max(0, Math.min(most - 1, Math.floor(v)));
-    return [clip((e.clientX - r.left) * scr.w / r.width, scr.w), clip((e.clientY - r.top) * scr.h / r.height, scr.h)];
+    // in the image's pixels, fractions kept (F32); past its edge while a
+    // button holds it, as the native window
+    return [(e.clientX - r.left) * scr.w / (r.width || 1), (e.clientY - r.top) * scr.h / (r.height || 1)];
   }
 
   function screen_key(code, down) {
@@ -1739,7 +1740,20 @@
         }
       });
     }
+    // Pointers as Bend 2.0.40 names them (W3C's Pointer Events): a Press
+    // for a button pressed or let go and a Move, of the mouse, a finger or
+    // a pen, with its id, tool, position, time; Leave, Lost, Scroll, Focus.
+    // The page sends what the browser says; the prelude gives the ids and
+    // drops what the native window drops.
     const c = scr.canvas;
+    const pointer = (e) => {
+      const [x, y] = screen_point(e);
+      const r = c.getBoundingClientRect();
+      const kx = scr.w / (r.width || 1);
+      const ky = scr.h / (r.height || 1);
+      return [e.pointerId, e.pointerType === "touch" ? 1 : e.pointerType === "pen" ? 2 : 0, x, y, Math.floor(e.timeStamp) >>> 0,
+        e.pressure || 0, e.tangentialPressure || 0, e.tiltX || 0, e.tiltY || 0, e.twist || 0, (e.width || 1) * kx, (e.height || 1) * ky];
+    };
     c.addEventListener("pointerdown", (e) => {
       if (!scr.open) {
         return;
@@ -1749,18 +1763,54 @@
       try {
         c.setPointerCapture(e.pointerId);
       } catch (err) {}
-      const [x, y] = screen_point(e);
-      screen_send([2, x, y]);
-      screen_send([1, x, y, [0, 2, 1][e.button] || 0, 1]);
+      screen_send([6, ...pointer(e)]);
+      screen_send([5, ...pointer(e), e.button < 0 ? 0 : e.button, 1]);
     });
     c.addEventListener("pointerup", (e) => {
-      const [x, y] = screen_point(e);
-      screen_send([1, x, y, [0, 2, 1][e.button] || 0, 0]);
+      if (scr.open) {
+        screen_send([5, ...pointer(e), e.button < 0 ? 0 : e.button, 0]);
+      }
     });
     c.addEventListener("pointermove", (e) => {
       if (scr.open) {
-        const [x, y] = screen_point(e);
-        screen_send([2, x, y]);
+        // a pen's other buttons and the mouse's come as moves with a change
+        // of buttons (W3C): a button that changes is its press
+        if (e.button >= 0 && e.type === "pointermove") {
+          const down = (e.buttons >> [0, 2, 1, 3, 4, 5][e.button]) & 1;
+          screen_send([5, ...pointer(e), e.button, down]);
+        }
+        screen_send([6, ...pointer(e)]);
+      }
+    });
+    c.addEventListener("pointerleave", (e) => {
+      if (scr.open && e.buttons === 0) {
+        screen_send([7, e.pointerId, e.pointerType === "touch" ? 1 : e.pointerType === "pen" ? 2 : 0]);
+      }
+    });
+    c.addEventListener("pointercancel", (e) => {
+      if (scr.open) {
+        screen_send([8, e.pointerId, e.pointerType === "touch" ? 1 : e.pointerType === "pen" ? 2 : 0]);
+      }
+    });
+    c.addEventListener("wheel", (e) => {
+      if (!scr.open) {
+        return;
+      }
+      e.preventDefault();
+      // toward the page's top and left, a notch about 1
+      const unit = e.deltaMode === 0 ? 100 : e.deltaMode === 1 ? 3 : 1;
+      const [x, y] = screen_point(e);
+      screen_send([9, x, y, -e.deltaX / unit, -e.deltaY / unit]);
+    }, { passive: false });
+    // losing the focus: its pointers pressed are lost, its keys let go,
+    // then Focus{False}, as the native window does
+    c.addEventListener("focus", () => screen_send([10, 1]));
+    c.addEventListener("blur", () => {
+      if (scr.open) {
+        for (const code of [...scr.held]) {
+          screen_key(code, false);
+        }
+        screen_send([10, 0]);
       }
     });
     c.addEventListener("contextmenu", (e) => e.preventDefault());

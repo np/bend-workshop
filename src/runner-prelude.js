@@ -48,7 +48,9 @@
     }
   }
   var __fs = {
-    writeSync: function (fd, data, at, len) {
+    // position: a positioned write (File.write_at), which leaves the
+    // handle's own position where it was
+    writeSync: function (fd, data, at, len, position) {
       at = at || 0;
       len = len === undefined || len === null ? data.length - at : len;
       if (fd === 1 || fd === 2) {
@@ -65,11 +67,17 @@
         __fail_errno(28);
       }
       var f = __files[h.path];
-      var pos = h.mode === "a" ? f.size : h.pos;
+      var placed = position !== undefined && position !== null;
+      var pos = placed ? Number(position) : h.mode === "a" ? f.size : h.pos;
       __grow(f, pos + len);
+      if (pos > f.size) {
+        f.data.fill(0, f.size, pos);
+      }
       f.data.set(data.subarray(at, at + len), pos);
       f.size = Math.max(f.size, pos + len);
-      h.pos = pos + len;
+      if (!placed) {
+        h.pos = pos + len;
+      }
       __total += len;
       __made[h.path] = true;
       return len;
@@ -100,12 +108,27 @@
       delete __fds[fd];
     },
     readSync: __nosys,
+    // File.read since 2.0.40: one buffer at a time, at a position or not
+    readvSync: function (fd, bufs, position) {
+      var got = 0;
+      for (var i = 0; i < bufs.length; i++) {
+        var n = __read(fd, bufs[i], bufs[i].length, position === null || position === undefined ? null : Number(position) + got);
+        if (n < 0) {
+          __fail_errno(__errno);
+        }
+        got += n;
+        if (n < bufs[i].length) {
+          break;
+        }
+      }
+      return got;
+    },
     fstatSync: function (fd) {
       var h = __fds[fd];
       if (!h) {
         __fail_errno(9);
       }
-      return { size: __files[h.path].size };
+      return { size: __files[h.path].size, isFile: function () { return true; } };
     },
     statSync: __nosys, readFileSync: __nosys, writeFileSync: __nosys
   };
@@ -146,12 +169,34 @@
     }
   };
   var Buffer = { from: function (x) { return x; } };
+  // stdout counts as a terminal: what is printed goes out at once (the
+  // host batches it), not held until a wait or the end
+  var __tty = { isatty: function () { return true; } };
   function require(name) {
     if (name === "fs" || name === "node:fs") {
       return __fs;
     }
+    if (name === "tty" || name === "node:tty") {
+      return __tty;
+    }
     throw new Error("require(\"" + name + "\") is not available in the browser");
   }
+  // A timer wait with no file to watch blocks in Atomics.wait (2.0.40),
+  // and a page not cross-origin isolated has no SharedArrayBuffer: the
+  // host sleeps instead; a wait with no deadline can never end here.
+  var SharedArrayBuffer = globalThis.SharedArrayBuffer || ArrayBuffer;
+  var Atomics = {
+    wait: function (arr, i, v, ms) {
+      if (ms === undefined || ms === Infinity) {
+        throw "bend: this wait needs a file or a socket, and the browser has neither";
+      }
+      if (ms > 0) {
+        __host.flush();
+        __host.wait(ms);
+      }
+      return "timed-out";
+    }
+  };
   var __fail = function () { return -1; };
   globalThis.BEND_IO = undefined;
   globalThis.BEND_SYS = {
@@ -287,21 +332,117 @@
       return __display.due_at;
     },
     // What the page sent since the last frame, in arrival order.
+    // Each is turned into Bend's Event (2.0.40) as window.c does: the mouse
+    // is id 0, a finger or a pen takes the least free id of 1..15, free
+    // again once a finger lifts, or on Leave or Lost; a Key or Press up of
+    // nothing down, an event of an id not live and a Focus that changes
+    // nothing are dropped.
     events: function () {
       var evs = __host.inbox.splice(0);
+      var out = [];
+      for (var i = 0; i < evs.length; i++) {
+        var ev = __display.event(evs[i]);
+        if (ev !== null) {
+          out.push(ev);
+        }
+      }
       var list = { $: "Nil" };
-      for (var i = evs.length - 1; i >= 0; i--) {
-        var e = evs[i];
-        var ev = e[0] === 0 ? { $: "Key", code: e[1] >>> 0, down: __bool(e[2]) }
-          : e[0] === 1 ? { $: "Mouse", x: e[1] >>> 0, y: e[2] >>> 0, button: e[3] >>> 0, down: __bool(e[4]) }
-          : e[0] === 2 ? { $: "Move", x: e[1] >>> 0, y: e[2] >>> 0 }
-          : e[0] === 4 ? { $: "Text", text: String(e[1]) }
-          : { $: "Close" };
-        list = { $: "Con", head: ev, tail: list };
+      for (var j = out.length - 1; j >= 0; j--) {
+        list = { $: "Con", head: out[j], tail: list };
       }
       return list;
     },
-    // io_run (2.0.39), awaiting where io_wait blocked: nothing here is ever
+    q: { live: 0, names: [], down: [], keys: [], focus: false },
+    id: function (kind, name, make) {
+      var q = __display.q;
+      if (kind === 0) {
+        return 0;
+      }
+      var free = 16;
+      for (var i = 15; i > 0; i--) {
+        if (!(q.live >> i & 1)) {
+          free = i;
+        } else if (q.names[i] === name) {
+          return i;
+        }
+      }
+      if (!make || free === 16) {
+        return 16;
+      }
+      q.names[free] = name;
+      q.live |= 1 << free;
+      return free;
+    },
+    event: function (e) {
+      var q = __display.q;
+      var f = Math.fround;
+      if (e[0] === 0) {
+        var at = q.keys.indexOf(e[1]);
+        if (!e[2] && at < 0) {
+          return null;
+        }
+        if (e[2] && at < 0) {
+          q.keys.push(e[1]);
+        } else if (!e[2]) {
+          q.keys.splice(at, 1);
+        }
+        return { $: "Key", code: e[1] >>> 0, down: __bool(e[2]) };
+      }
+      if (e[0] === 4) {
+        return { $: "Text", text: String(e[1]) };
+      }
+      if (e[0] === 3) {
+        return { $: "Close" };
+      }
+      if (e[0] === 9) {
+        return { $: "Scroll", x: f(e[1]), y: f(e[2]), dx: f(e[3]), dy: f(e[4]) };
+      }
+      if (e[0] === 10) {
+        if (!!e[1] === q.focus) {
+          return null;
+        }
+        q.focus = !!e[1];
+        return { $: "Focus", on: __bool(e[1]) };
+      }
+      // the pointers: [kind, pointer id, tool, x, y, time, force,
+      // tangential, tilt x, tilt y, twist, width, height, button, down]
+      var kind = e[0];
+      var tool = e[2];
+      var press = kind === 5;
+      var gone = kind === 7 || kind === 8;
+      var id = __display.id(tool, e[1], press ? !!e[14] : kind === 6 && tool === 2);
+      if (id >= 16 || (gone && !(q.live >> id & 1))) {
+        return null;
+      }
+      var m = 1 << id;
+      if (gone) {
+        q.live &= ~m;
+        q.down[id] = 0;
+        return kind === 7 ? { $: "Leave", id: id } : { $: "Lost", id: id };
+      }
+      var b = press ? 1 << (e[13] & 31) : 0;
+      if (press && !e[14]) {
+        if (!((q.down[id] || 0) & b)) {
+          return null;
+        }
+        q.down[id] &= ~b;
+        if (tool === 1 && q.down[id] === 0) {
+          q.live &= ~m;
+        }
+      } else {
+        q.down[id] = (q.down[id] || 0) | b;
+        q.live |= m;
+      }
+      var t = tool === 1 ? { $: "Tool.Finger", force: f(e[6] || 0.5), width: f(e[11]), height: f(e[12]) }
+        : tool === 2 ? { $: "Tool.Pen", force: f(e[6]), tangential: f(e[7]), tilt_x: f(e[8]), tilt_y: f(e[9]), twist: f(e[10]) }
+        : { $: "Tool.Mouse" };
+      var base = { id: id, tool: t, x: f(e[3]), y: f(e[4]), time: e[5] >>> 0 };
+      if (press) {
+        return { $: "Press", id: id, tool: t, x: base.x, y: base.y, time: base.time, button: e[13] >>> 0, down: __bool(e[14]) };
+      }
+      return { $: "Move", id: id, tool: t, x: base.x, y: base.y, time: base.time };
+    },
+    // io_run (2.0.40), awaiting where io_wait blocked: nothing here is ever
     // readable, so a wait is a deadline or a dead end. As there, a wait
     // that comes due fires even while computations keep the loop busy, an
     // effect is $0eff[op.$](...args, kont), and one that waits parks itself

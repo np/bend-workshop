@@ -6,7 +6,9 @@ is no server. This file records the design choices made so far, so that whoever
 works on the page next keeps them, or changes them on purpose.
 
 - Shipped as one standalone file, `bend-workshop.html` (= `dist/index.html`)
-- Tracks the latest Bend: currently 2.0.39, commit d30d7dd of bendlang/bend
+- Tracks the latest Bend: currently 2.0.40, commit 624dd9f of bendlang/bend
+  (the tag `v2.0.40`: bendlang/bend's `main` stopped at 2.0.35, releases are
+  tagged on their own line, so an upgrade takes the newest tag)
 - Owner's priorities: proof work on a phone, staying current with Bend, no
   surprises (privacy, lost work, silent failures)
 
@@ -182,7 +184,7 @@ in git, where both are tracked and committed (`git_tracked`;
 **Windows.** The official JS IO loop never yields, so a worker running it
 cannot hear the page. A program that opens a `Window` therefore gets
 `runner-tail.js`: an async copy of `io_run` that yields between frames, and its
-own `Window.open/frame/set_title/close`. It follows `io_run` as of 2.0.39:
+own `Window.open/frame/set_title/close`. It follows `io_run` as of 2.0.40:
 an effect is a plain function in `$0eff`, called as
 `$0eff[op.$](...args, kont)`; one that waits parks itself with `io_park_on`
 and answers `undefined`, and a due wait calls its `more()` and resumes `k`
@@ -196,15 +198,37 @@ looks at its waits, kept in deadline order, at each yield). Frames are quadtrees
 transferred buffers, at 60 Hz. Key codes follow the native table (lower-case
 character, arrows from 63232, modifiers past 65536); a held key repeats as
 up-then-down, like X11. A printable character also comes as a `Text`
-event after its `Key`, as the native window sends typed text. On the page, without workers, the same loop runs
+event after its `Key`, as the native window sends typed text. Pointers
+follow 2.0.40's events (W3C's Pointer Events): `Press{id, tool, x, y,
+time, button, down}` and `Move{id, tool, x, y, time}` for the mouse
+(`Tool.Mouse`), a finger (`Tool.Finger{force, width, height}`) or a pen
+(`Tool.Pen{force, tangential, tilt_x, tilt_y, twist}`), positions in the
+image's pixels as F32 (past its edge while a button holds it), W3C's
+buttons; `Leave` (a pointer with no button down gone off the canvas),
+`Lost` (`pointercancel`), `Scroll{x, y, dx, dy}` (the wheel, toward the
+top and left, a notch about 1), `Focus{on}` (losing it first lets go of
+the keys held). The page sends what the browser says; the prelude gives
+the ids and filters as window.c does (`__display.event`): the mouse is id
+0, a finger or a pen takes the least free id of 1..15, freed when a finger
+lifts or on Leave and Lost; a Key or Press up of nothing down, an event of
+an id not live and a Focus that changes nothing are dropped. `Look`
+(`Window.grab`) and `Window.fullscreen` answer as the JS lane does (Fail:
+a native binary is needed). On the page, without workers, the same loop runs
 cooperatively and Stop is a flag read each frame.
 
 > **Coupling.** `runner-prelude.js` and `runner-tail.js` mirror internals of
 > the JS runtime in `comp.ts`: `io_run`, `io_park_on`, `io_push`,
 > `io_active`, the `$0eff` table keyed by def name (a function per effect
-> since 2.0.37), `show_val`'s arguments, `BEND_SYS.select`, how `Bool` is
-> represented, the `Event` constructors, how the loop orders its waits and
-> when it looks at them. Check them first on every Bend upgrade:
+> since 2.0.37), `io_exit`'s arguments (`main` alone since 2.0.40, a pure
+> main's value printed by Bend code the compiler adds), `BEND_SYS.select`,
+> how `Bool` is represented, the `Event` and `Tool` constructors, how the
+> loop orders its waits and when it looks at them, and what the effects
+> ask of Node: `fs.openSync`, `writeSync` (with a position since 2.0.40),
+> `readvSync` and `fstatSync(...).isFile()` (`File.read` since 2.0.40),
+> `require("tty").isatty` (stdout held unless a terminal: the prelude says
+> it is one), and `Atomics.wait` on a `SharedArrayBuffer` for a timer with
+> nothing else to watch (a page not cross-origin isolated has none: the
+> prelude stands in, sleeping through the host). Check them first on every Bend upgrade:
 > `window_demos` fails when no window opens, and `timers_busy` runs Bend's
 > own `tests/io/within_busy.bend` through both loops and fails unless the
 > timer fires and the pipeline ends.
@@ -929,7 +953,9 @@ type), the goal after `⊢`, and a toolbar.
   `languages`, `portuguese`. Windows: `window_demos`,
   `window_mobile`, `window_iframe_csp`, `window_no_worker`,
   `window_page_mode_mobile`, `timers_busy` (Bend's `within_busy` through both
-  loops), `window_text` (typed text as `Text` events, worker and page). Proof tools: `goals_signatures`, `kept_goals_tooltip`, `long_goals`,
+  loops), `window_text` (typed text as `Text` events, worker and page),
+  `window_pointer` (mouse, two fingers, a pen, a cancel, the wheel, the
+  focus, as 2.0.40's events, worker and page). Proof tools: `goals_signatures`, `kept_goals_tooltip`, `long_goals`,
   `split`, `split_narrow`, `split_disabled`, `split_imported` (an import
   added), `constructors`, `solve_lazy`, `lemma`, `lemma_mobile`, `lemma_pong`,
   `lemma_template` (`~f`, Ctrl+Z), `rewrite` (grouped, inline in an
@@ -1014,7 +1040,13 @@ type), the goal after `⊢`, and a toolbar.
    and the tail followed. A `Nat` now crosses to JS as a plain number; the
    page passes none. In 2.0.37 → 2.0.39 the loop yields after 64 ready
    effects and marks its scheduler done; waits default to an `at` of
-   Infinity. The copy followed.
+   Infinity. The copy followed. In 2.0.39 → 2.0.40 `io_exit` lost its
+   `show` (the tail's pure-value branch went), File effects park on the loop
+   and read with `readvSync`, a timer with no file to watch waits in
+   `Atomics.wait`, stdout is held unless `tty.isatty(1)`, the pointer events
+   became `Press`/`Move` with ids and tools (`window_pointer`), and three
+   demos grew a `SPEC.bend` (the examples now take every `.bend` file of a
+   demo's folder, the listed ones first).
 4. Update the examples if Base or the syntax moved, then write the new full
    hash in `BEND_COMMIT` and push: the workflow publishes.
 
