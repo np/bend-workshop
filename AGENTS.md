@@ -306,6 +306,14 @@ targets, all pure TypeScript, so all within the page's reach:
   declaration around the caret. One `insertText`, so one Undo. Tab and Shift-Tab shift by 2.
   Smart quotes and dashes from phone keyboards are turned back into ASCII. The
   key bar inserts through `execCommand`, so undo keeps working.
+- **Format** (the file's sheet: a tap on its open tab; Shift+Alt+F).
+  Bend's own formatter, `tools/bend-fmt-lsp/src/formatter.ts`, bundled
+  unmodified (`Core.format`): indentation by two and token spacing, line
+  breaks, blank lines and comments kept, nothing wrapped; it hands the
+  source back when it cannot format it safely (its tokens or depths would
+  change). The page checks both texts and writes only when the verdict is
+  the same, as one undo step with Undo in the message; an already
+  formatted file says so. `.bend` files only.
 - **Caret per file.** Each file keeps where the caret was and how far the
   editor was scrolled the last time it was open (with the project, so a
   reload gives them back; a hub tab's for the visit only). A click on a tab
@@ -971,7 +979,8 @@ type), the goal after `⊢`, and a toolbar.
   parameters' order), `find_comment`, `find_browser` (the editor stays where a find took it
   when its bar closes), `sig_types` (type parameters marked, kinds with
   `<&>`, a type's sheet), `autoindent` (Enter after brackets, desktop and
-  touch), `sig_params` (a parameter called, its arrow type, the
+  touch), `format` (the sheet's button and the shortcut, comments kept, one
+  Undo), `sig_params` (a parameter called, its arrow type, the
   argument bold; a type's parameters over a two-line header), `project_versions` (the id in the
   zip, a version imported, Undo, a snapshot exported, diffs, an unknown
   id kept), `todo_goals` (`?TODO` cards, no snippet during the agent), `lawdef_pong`, `operators`, `opcalls`,

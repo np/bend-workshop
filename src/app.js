@@ -1075,6 +1075,9 @@
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
         e.preventDefault();
         find_open();
+      } else if (e.shiftKey && e.altKey && (e.key === "F" || e.key === "f" || e.code === "KeyF")) {
+        e.preventDefault();
+        ed_format();
       } else if ((e.ctrlKey || e.metaKey) && e.key === "/") {
         e.preventDefault();
         ed_comment();
@@ -5728,6 +5731,39 @@
     setTimeout(() => input.focus(), 60);
   }
 
+  // The open file through Bend's formatter (tools/bend-fmt-lsp): checked
+  // first, written as one undo step only if the verdict stays the same.
+  async function ed_format() {
+    const f = file_now();
+    if (agent_guard() || !f.name.endsWith(".bend") || view.file !== null) {
+      return;
+    }
+    const before = f.text;
+    let next;
+    try {
+      next = Core.format(before, { tabSize: 2, insertSpaces: true });
+    } catch (e) {
+      next = before;
+    }
+    if (next === before) {
+      toast(t("format_same"));
+      return;
+    }
+    const was = await comp_ask(f.name, false);
+    const now = await comp_ask(f.name, false, { ...files_map(), [f.name]: next });
+    if (file_now() !== f || f.text !== before) {
+      return;
+    }
+    const say = (r) => r.ok ? "ok" : r.open ? "open" + (r.goals || []).length : "error";
+    if (say(now) !== say(was)) {
+      toast(t("format_refused", err_brief(now)));
+      return;
+    }
+    const keep = work_snapshot();
+    ed_rewrite(next);
+    toast(t("format_done"), t("undo"), () => work_restore(keep));
+  }
+
   function file_sheet() {
     if (agent_guard()) {
       return;
@@ -5739,6 +5775,8 @@
     const body = el("div", { class: "form" },
       el("div", { class: "row" },
         el("button", { class: "btn", type: "button", text: t("rename"), onclick: () => { close(); name_sheet(i); } }),
+        f.name.endsWith(".bend") ? el("button", { class: "btn", type: "button", text: t("format"), title: t("format_hint"),
+          onclick: () => { close(); ed_format(); } }) : null,
         el("button", { class: "btn", type: "button", text: t("copy_content"), onclick: () => { close(); copy_text(f.text); } }),
         del),
       el("small", { text: state.files.length < 2 ? t("last_file") : t("undo_soon") }));

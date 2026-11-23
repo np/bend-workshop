@@ -547,3 +547,8 @@ export function base_text(): string {
 }
 
 export { VERSION, COMMIT, INFIX };
+
+// Bend's own formatter (tools/bend-fmt-lsp, unmodified): indentation and
+// token spacing, comments and line breaks kept; it hands the source back
+// when it cannot format it safely.
+export { formatBend as format } from "../../bend/tools/bend-fmt-lsp/src/formatter.ts";
