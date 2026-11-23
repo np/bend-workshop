@@ -468,6 +468,13 @@
     const text = JSON.stringify(files);
     const last = store.snaps[store.snaps.length - 1];
     if (last && JSON.stringify(last.files) === text) {
+      // the same files: no new entry, but one asked to be kept (before a
+      // delete, a restore, the agent) is no longer a slot to overwrite
+      if (keep === true && !last.keep) {
+        last.keep = true;
+        store.slots += 1;
+        ls_set(LS_SNAP + state.id, store.snaps);
+      }
       return false;
     }
     const now = Date.now();
@@ -6596,6 +6603,37 @@
     document.addEventListener("keydown", on_key);
     document.body.append(scrim);
     return close;
+  }
+
+  // A question before a step that is hard to take back: a sheet (a page
+  // in a sandboxed frame may not call confirm()), answering true for yes.
+  function confirm_ask(title, text, yes) {
+    return new Promise((done) => {
+      let answered = false;
+      const answer = (v) => {
+        if (!answered) {
+          answered = true;
+          close();
+          done(v);
+        }
+      };
+      const ok = el("button", { class: "btn danger", type: "button", text: yes, onclick: () => answer(true) });
+      const body = el("div", { class: "confirm" }, el("p", { text }),
+        el("div", { class: "row" }, ok, el("button", { class: "btn", type: "button", text: t("cancel"), onclick: () => answer(false) })));
+      const close = sheet_open(title, body);
+      // closed by its own button, Escape or a tap outside: no
+      const watch = new MutationObserver(() => {
+        if (!body.isConnected) {
+          watch.disconnect();
+          if (!answered) {
+            answered = true;
+            done(false);
+          }
+        }
+      });
+      watch.observe(document.body, { childList: true });
+      ok.focus();
+    });
   }
 
   let toast_now = null;

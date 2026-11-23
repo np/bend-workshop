@@ -150,7 +150,9 @@
         { name: "edit_file", run: tool_edit, schema: S({ path: str, old_text: str, new_text: str }, ["path", "old_text", "new_text"]),
           description: "Replaces old_text, which must occur exactly once in the file, by new_text. Refused on locked files. The project is checked right after; the verdict comes back." },
         { name: "create_file", run: tool_create, schema: S({ path: str, text: str }, ["path", "text"]),
-          description: "Creates a new file (name.bend, or name.js for a foreign effect). Refused if it exists. The project is checked right after." });
+          description: "Creates a new file (name.bend, or name.js for a foreign effect). Refused if it exists. The project is checked right after." },
+        { name: "delete_file", run: tool_delete, schema: S({ path: str }, ["path"]),
+          description: "Deletes a project file (a snapshot is taken first, so the user can bring it back). Refused on locked files, on the file checks start from, and on the last file. The project is checked right after: the files that imported it fail." });
     }
     tools.push(
       { name: "fill_hole", run: tool_fill, schema: S({ hole: str, code: str }, ["hole", "code"]),
@@ -436,6 +438,26 @@
     proj_touch();
     store_save();
     files_paint();
+    return agent_after();
+  }
+
+  async function tool_delete(input) {
+    const path = String(input.path || "");
+    const f = agent_file(path);
+    if (path === agent.entry) {
+      throw new Error(path + " is the file checks start from: it cannot go");
+    }
+    if (state.files.length < 2) {
+      throw new Error(path + " is the project's last file");
+    }
+    snap_take(["snap_before_delete", path], true);
+    const i = state.files.indexOf(f);
+    const at = state.active;
+    state.files.splice(i, 1);
+    agent.current.diff = { file: path, del: f.text.split("\n").slice(0, 30), add: [] };
+    proj_touch();
+    store_save();
+    files_pick(at === i ? Math.max(0, i - 1) : at > i ? at - 1 : at);
     return agent_after();
   }
 
@@ -1507,10 +1529,17 @@
     trace("stop", { steps: agent.steps });
   }
 
-  function agent_undo() {
+  async function agent_undo() {
     if (agent.before === null || agent.running) {
       return;
     }
+    if (!await confirm_ask(t("agent_undo"), t("agent_undo_confirm"), t("agent_undo_yes"))) {
+      return;
+    }
+    if (agent.before === null || agent.running) {
+      return;
+    }
+    snap_take("snap_before_restore", true);
     work_restore(agent.before);
     store_save();
     trace("undo", {});

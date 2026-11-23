@@ -69,7 +69,15 @@ with sync_playwright() as p:
     print("3 call 1:", s[0]["log"][0][:200])
     print("3 call 2:", [l[:140] for l in s[1]["log"]])
     print("3 final:", page.inner_text(".ag-verdict"), "| sizes:", page.evaluate("window.__sizes"))
-    page.click(".agent-end .btn:has-text('Undo the session')"); time.sleep(0.8)
+    # Undo asks first: Cancel leaves everything, the danger button undoes
+    page.click(".agent-end .btn:has-text('Undo the session')"); time.sleep(0.4)
+    asked = page.locator(".confirm").count() == 1
+    page.locator(".confirm .btn", has_text="Cancel").click(); time.sleep(0.4)
+    kept = "?inner" not in code(page) and "?step" not in code(page) and page.locator(".confirm").count() == 0
+    page.click(".agent-end .btn:has-text('Undo the session')"); time.sleep(0.4)
+    page.locator(".confirm .btn.danger").click(); time.sleep(0.8)
+    print("3 asked first, cancel keeps:", asked, kept)
+    assert asked and kept, "3 undo without asking"
     print("3 undone:", "?step" in code(page) and "?inner" not in code(page))
 
     # 4. project mode, a locked file, run, eval, lookup, guide

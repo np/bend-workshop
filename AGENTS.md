@@ -513,7 +513,9 @@ type), the goal after `⊢`, and a toolbar.
   project, kept only if edited.
 - **Snapshots.** Taken when the open file checks or leaves only goals, and
   before deletes and restores. Edits within 3 minutes share a slot, except the
-  session's first, which is kept intact. Each project keeps 30; when the
+  session's first, which is kept intact. A snapshot asked to be kept (before
+  a delete, a restore, the agent) whose files are those of the last one
+  makes that one kept, rather than none. Each project keeps 30; when the
   storage is full, the oldest automatic snapshots are pruned.
 - **The project's id** goes with every export (`.workshop/project.json` in a
   zip, `id` in the `.json`). Imported back, a single zip or `.json` whose
@@ -679,7 +681,9 @@ type), the goal after `⊢`, and a toolbar.
   start with `#` too), `list_holes` (every `?name` in the project: file, line,
   enclosing def, whether the agent may fill it and why not, and its goal and
   context when the checker reached it, or why it did not), `edit_file` (an
-  exact, unique replacement), `create_file`,
+  exact, unique replacement), `create_file`, `delete_file` (a snapshot
+  kept first; refused for a locked file, the file checks start from and the
+  last file; the check after says which files imported it),
   `fill_hole`, `check` (with `check_ms`, the checking time, which every
   write's verdict carries too: what to watch when asked to make a file
   check faster), `run` (a main, 10 s, output capped; arguments as a list,
@@ -796,7 +800,9 @@ type), the goal after `⊢`, and a toolbar.
   and project sheets) are refused while it works. The step budget pauses
   rather than stops: *Continue* grants as many steps again, *Stop* ends the
   session. The session ends with a check, its verdict shown. *Undo the
-  session* restores the snapshot. Agent writes go straight to the text, not
+  session* restores the snapshot, after a question (`confirm_ask`: a sheet,
+  since a sandboxed frame may not call `confirm()`; Escape or a tap outside
+  is no) and a snapshot of the files as they stand. Agent writes go straight to the text, not
   through the browser's undo stack, so no keyboard opens on a phone; the
   snapshot stands for undo.
 - **Kept awake** (experimental, off by default, a session's setting). A
@@ -991,7 +997,8 @@ type), the goal after `⊢`, and a toolbar.
   run, eval, lookup, guide, pause, stop, undo), `agent_apis` (simulated
   Anthropic and OpenAI servers), `agent_no_worker`, `agent_holes_export`
   (`list_holes`, exports, no key), `agent_tools` (`list_symbols`,
-  `signature`), `agent_trace` (the live conversation, tokens, past sessions
+  `signature`), `agent_delete` (`delete_file`, its refusals, the snapshot
+  kept before), `agent_trace` (the live conversation, tokens, past sessions
   across a reload), `agent_resume` (a session ended by an API error,
   continued with other settings and a note, then taken up again from the
   past sessions after a reload), `agent_memory` (the view in each Claude
