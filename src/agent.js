@@ -1076,7 +1076,104 @@
     }
   }
 
-  async function agent_post(url, headers, body) {
+  // A request to the model's server, and when the server fails (it is
+  // down, restarting, has dropped the model): its model list asked for
+  // every REVIVE_MS, given up after 10 failed lists; once it lists, asked
+  // again for as long as 30 lists until the model is there; then the same
+  // request again, so the conversation goes on as if nothing happened (no
+  // error enters it). Stop cancels the wait. At most 3 such waits a request.
+  const REVIVE_MS = Number(new URLSearchParams(location.search).get("revive_ms")) || 60000;
+
+  function agent_down(e) {
+    if (!e || e.code === "cancelled") {
+      return false;
+    }
+    if (e.code === "network") {
+      return true;
+    }
+    const st = e.status | 0;
+    return st >= 500 || st === 404 || st === 408 || st === 425 || st === 429 || (st === 400 && /model/i.test(e.body || ""));
+  }
+
+  function agent_sleep(ms) {
+    return new Promise((done, fail) => {
+      const signal = agent.ctl ? agent.ctl.signal : null;
+      if (signal && signal.aborted) {
+        fail({ code: "cancelled", message: "" });
+        return;
+      }
+      const timer = setTimeout(done, ms);
+      if (signal) {
+        signal.addEventListener("abort", () => {
+          clearTimeout(timer);
+          fail({ code: "cancelled", message: "" });
+        }, { once: true });
+      }
+    });
+  }
+
+  function model_listed(ids, model) {
+    return ids.some((id) => id === model || id === model + ":latest" || id.replace(/:latest$/, "") === model.replace(/:latest$/, ""));
+  }
+
+  async function agent_revive(cfg, err) {
+    const model = cfg.model || AI_PROVIDERS[cfg.provider].model || "";
+    const t0 = Date.now();
+    trace("server_down", { error: err.message, model });
+    const note = agent_log({ kind: "note", text: t("agent_server_down", err.message) });
+    let fails = 0;
+    let missing = 0;
+    for (;;) {
+      let ids = null;
+      try {
+        ids = await ai_models(cfg);
+      } catch (e) {
+        fails += 1;
+        if (fails >= 10) {
+          note.text = t("agent_server_gone", err.message);
+          trace("server_gone", { lists_failed: fails });
+          agent_paint_soon();
+          throw err;
+        }
+      }
+      if (ids !== null) {
+        if (model === "" || model_listed(ids, model)) {
+          note.text = t("agent_server_back", Math.round((Date.now() - t0) / 1000));
+          trace("server_back", { after_ms: Date.now() - t0, lists_failed: fails, lists_without: missing });
+          agent_paint_soon();
+          return;
+        }
+        missing += 1;
+        if (missing >= 30) {
+          note.text = t("agent_model_gone", model);
+          trace("model_gone", { model, lists: missing });
+          agent_paint_soon();
+          throw err;
+        }
+      }
+      note.text = ids === null ? t("agent_server_wait_list", err.message, fails, 10)
+        : t("agent_server_wait_model", model, missing, 30);
+      agent_paint_soon();
+      await agent_sleep(REVIVE_MS);
+    }
+  }
+
+  async function agent_post(url, headers, body, cfg) {
+    for (let revived = 0;; revived++) {
+      try {
+        return await agent_post_once(url, headers, body);
+      } catch (e) {
+        if (!cfg || revived >= 3 || !agent_down(e)) {
+          throw e;
+        }
+        await agent_revive(cfg, e);
+        // the same request again: what it sends was traced already
+        agent.api_seen = Math.min(agent.api_seen || 0, body.messages.length);
+      }
+    }
+  }
+
+  async function agent_post_once(url, headers, body) {
     const round = agent.trace.filter((x) => x.type === "api_request").length + 1;
     // the messages traced already, of this conversation (it restarts from
     // the memory when it grows too long: then system and tools again)
@@ -1102,7 +1199,7 @@
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       trace("api_error", { round, status: res.status, body: text.slice(0, 4000) });
-      throw { code: "http", message: "HTTP " + res.status + (text ? ": " + text.slice(0, 300) : "") };
+      throw { code: "http", status: res.status, body: text.slice(0, 2000), message: "HTTP " + res.status + (text ? ": " + text.slice(0, 300) : "") };
     }
     const data = await res.json();
     trace("api_response", { round, body: data });
@@ -1123,7 +1220,7 @@
         cache_control: { type: "ephemeral" },
         system: [{ type: "text", text: sys, cache_control: { type: "ephemeral" } }],
         tools: tools.map((tl) => ({ name: tl.name, description: tl.description, input_schema: tl.schema })), messages: msgs },
-        agent_reasoning(cfg, model, tokens)));
+        agent_reasoning(cfg, model, tokens)), cfg);
       const blocks = data.content || [];
       return { text: blocks.filter((b) => b.type === "text").map((b) => b.text).join("\n"), cut: data.stop_reason === "max_tokens",
         think: blocks.filter((b) => b.type === "thinking" && b.thinking).map((b) => b.thinking).join("\n\n"),
@@ -1134,7 +1231,7 @@
     const data = await agent_post(url + "/v1/chat/completions", cfg.key ? { authorization: "Bearer " + cfg.key } : {},
       Object.assign({ model, max_tokens: agent_limits(cfg).tokens, messages: [{ role: "system", content: sys }].concat(msgs),
         tools: tools.map((tl) => ({ type: "function", function: { name: tl.name, description: tl.description, parameters: tl.schema } })) },
-        agent_reasoning(cfg, model, agent_limits(cfg).tokens)));
+        agent_reasoning(cfg, model, agent_limits(cfg).tokens)), cfg);
     const m = ((data.choices || [])[0] || {}).message || {};
     const calls = (m.tool_calls || []).map((c) => {
       let input = {};

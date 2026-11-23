@@ -866,6 +866,20 @@ type), the goal after `⊢`, and a toolbar.
   an ended session's journal opens on a banner (*Continue…*, which leads
   to the Session view, *Undo the session*, *New session*). Then
   *Conversation* and *Memory*.
+- **A server that fails** (an API profile: Anthropic, OpenAI, an
+  OpenAI-shaped server; `agent_post`). A request that fails as a server
+  does (no network, HTTP 5xx, 404, 408, 425, 429, a 400 about the model:
+  `agent_down`) is not an error yet: the page asks the server for its
+  models (`ai_models`) every minute (`REVIVE_MS`; `?revive_ms=` in tests),
+  gives up after 10 failed lists; once it lists, asks again for as long as
+  30 lists until the session's model is there (`model_listed`, `:latest`
+  aside); then sends the very same request again, so the conversation goes
+  on as if nothing happened: no error enters the messages or the memory.
+  The journal has one note that follows the wait (tries, then "the server
+  is back after n s"); the trace has `server_down`, `server_back`,
+  `server_gone`, `model_gone`. Stop cancels the wait. At most three waits a
+  request; given up, the session ends with the error as before. Claude in
+  the viewer has no model list, so it is not waited for.
 - **Taking a session up again** (by hand). A session that ended (an error, a stop,
   the agent done or blocked, the API out of breath) can be continued from
   the Session view: the same settings as a new session (what it
@@ -1056,6 +1070,9 @@ type), the goal after `⊢`, and a toolbar.
   `agent_keep` (the sound's length and level, the media session during a
   session, off by default, stopped at the end; the Session tab first, its
   settings readable during the session),
+  `agent_revive` (a server failing mid-session: the list failing, then
+  without the model, then with it, the same request sent again; 10 failed
+  lists, 30 without the model, Stop during the wait),
   `agent_journal` (a reply without STATUS relaunched, the journal newest
   first with times, an entry unfolded into its events, the conversation's
   link back, the user's instructions in the prompt),
