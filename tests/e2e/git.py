@@ -118,7 +118,9 @@ with sync_playwright() as p:
     page.fill(".git input[aria-label='Repository URL']", "http://127.0.0.1:8130/seed.git")
     page.locator(".git .btn", has_text="Clone").click()
     page.wait_for_function("document.querySelector('#proj-name').textContent === 'seed'", timeout=30000); time.sleep(0.8)
-    check("6 cloned:", code(page) == A, page.locator(".file").count() == 1)
+    # the clone's README comes in as a document beside main.bend
+    files = [x.strip() for x in page.locator(".file").all_inner_texts()]
+    check("6 cloned:", code(page) == A, len(files) == 2 and any("README.md" in f for f in files))
     set_code(page, B); git_sheet(page)
     commit(page, "from the page")
     page.locator(".git .btn", has_text="Push").click(); time.sleep(2.0)
