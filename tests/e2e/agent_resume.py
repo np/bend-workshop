@@ -1,5 +1,6 @@
 # Taking an agent session up again: a session ends on an error (the API
-# overloaded), the user changes the settings (holes only, each fill must
+# overloaded, and its model list failing all along, so the page's wait for
+# the server gives up after its 10 tries, a few ms apart here), the user changes the settings (holes only, each fill must
 # close its goal, another budget) and says what to do now; the session goes
 # on with a fresh brief that carries why it stopped and the user's words.
 # One session in the end: one journal, one trace, one past session, which
@@ -10,10 +11,15 @@ from serve import serve, shot
 serve("dist", 8123)
 CORS = {"access-control-allow-origin": "*", "access-control-allow-headers": "*", "access-control-allow-methods": "POST, GET, OPTIONS"}
 n = {"k": 0}
+resumed = {"on": False}
 bodies = []
 def anthropic(route):
     if route.request.method == "OPTIONS": return route.fulfill(status=204, headers=CORS)
-    if route.request.method == "GET": return route.fulfill(status=200, content_type="application/json", headers=CORS, body=json.dumps({"data": [{"id": "claude-x"}]}))
+    if route.request.method == "GET":
+        # the model list: down while the API is overloaded (the first leg)
+        if n["k"] == 2 and not resumed["on"]:
+            return route.fulfill(status=503, headers=CORS, body="down")
+        return route.fulfill(status=200, content_type="application/json", headers=CORS, body=json.dumps({"data": [{"id": "claude-x"}]}))
     k = n["k"]; n["k"] += 1
     bodies.append(json.loads(route.request.post_data))
     if k == 1:
@@ -30,7 +36,7 @@ with sync_playwright() as p:
     page = ctx.new_page()
     errs = []
     page.on("pageerror", lambda e: errs.append(str(e)))
-    page.goto("http://localhost:8123/index.html"); page.wait_for_selector("#verdict", timeout=30000)
+    page.goto("http://localhost:8123/index.html?revive_ms=10"); page.wait_for_selector("#verdict", timeout=30000)
     page.click("#btn-settings"); page.locator(".ai-box .btn", has_text="New profile").click(); time.sleep(0.4)
     page.locator(".ai-box select").nth(1).select_option("anthropic"); time.sleep(0.3)
     page.locator(".ai-rows input[type=password]").fill("sk-x"); time.sleep(0.8); page.click(".sheet-head button")
@@ -51,6 +57,7 @@ with sync_playwright() as p:
     page.locator(".agent-resume label.check:not(.auto):not(.keep) input").check()
     page.fill("#agent-budget", "7")
     page.fill("#agent-note", "The API was overloaded: just fill ?base with {==}.")
+    resumed["on"] = True
     page.locator(".agent-resume .btn", has_text="Continue the session").click()
     page.wait_for_selector(".agent-ended", timeout=30000); time.sleep(0.5)
     print("2 verdicts:", page.locator(".ag-verdict").all_inner_texts())
