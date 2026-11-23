@@ -166,6 +166,23 @@ in `runner-prelude.js`. Output is batched; Stop is `terminate`. Without workers
 it runs through `new Function`, then a `<script>` tag. `IO.args()` gets the
 program name, then the active argument set's arguments.
 
+**Documents.** A project holds documents beside its code: plain text
+(`is_doc`: .md, .txt, .json, .csv, .yaml, .toml, .org, .rst, .tex, .html…,
+not under `test/data/` or `.workshop/`), made by the files' **+** sheet or
+uploaded there (*Upload files…*, `files_upload`: the name made safe, a
+binary refused saying so), edited in the editor (shown plain, never
+checked or run), kept with the project, in the zip and the `.json`, and in
+git (`git_own`: tracked, written, read back on checkout, pull and clone; a
+clone's README comes in as a document). The Agent tab attaches documents
+to a request (*Attached documents*, ticked per project, `state.attach`;
+*Upload documents…* adds and attaches at once): they go whole into the
+brief, in an `<attached>` section after the files (120,000 characters in
+all, the rest left to `read_file`), and the settings and the trace list
+them. A document is locked to the agent unless the user unlocks it (the
+same chips as the locks, `state.doc_write`), and the brief's rights say
+which; one the agent creates is its to update. The hand-over to UniiChat
+carries the attached ones.
+
 **Debug.trace.** Bend's foreign code is IO only, so a pure trace is plain
 Bend: `debug.bend` (the files' **+** sheet, *Add debug.bend*, which also
 imports it as `Debug` into the open file) defines `trace(-A: Type, msg,
@@ -734,7 +751,8 @@ type), the goal after `⊢`, and a toolbar.
   at 6000 characters. Tool errors go back to the agent as errors; they do not
   end the session.
 - **Locks.** Each file can be locked in the tab (kept with the project): the
-  agent reads it and cannot write it. Base and hub modules are always
+  agent reads it and cannot write it. A document is locked until unlocked
+  (see *Documents*). Base and hub modules are always
   read-only. What the agent may change (locks, holes) is written in a
   `<rights>` section late in the prompt, after the files, so that changing
   it leaves the cached head as it was.
@@ -1073,6 +1091,9 @@ type), the goal after `⊢`, and a toolbar.
   `agent_revive` (a server failing mid-session: the list failing, then
   without the model, then with it, the same request sent again; 10 failed
   lists, 30 without the model, Stop during the wait),
+  `agent_attach` (a document uploaded, a binary refused, edited, attached
+  whole to the prompt, locked to the agent then unlocked and written,
+  uploaded from the agent's form; in the zip, in git, imported back),
   `agent_journal` (a reply without STATUS relaunched, the journal newest
   first with times, an entry unfolded into its events, the conversation's
   link back, the user's instructions in the prompt),

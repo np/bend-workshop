@@ -93,8 +93,17 @@
 
   // What the agent may not write: locked files; in a hole session, all of
   // them but through fill_hole.
+  // A code file is locked when the user locks it; a document (a spec,
+  // notes) is locked unless the user lets the agent write it.
   function agent_locked(name) {
+    if (is_doc(name)) {
+      return !(state.doc_write || []).includes(name);
+    }
     return (state.locks || []).includes(name);
+  }
+
+  function agent_attached() {
+    return state.files.filter((f) => (state.attach || []).includes(f.name));
   }
 
   function holes_in(text) {
@@ -150,7 +159,7 @@
         { name: "edit_file", run: tool_edit, schema: S({ path: str, old_text: str, new_text: str }, ["path", "old_text", "new_text"]),
           description: "Replaces old_text, which must occur exactly once in the file, by new_text. Refused on locked files. The project is checked right after; the verdict comes back." },
         { name: "create_file", run: tool_create, schema: S({ path: str, text: str }, ["path", "text"]),
-          description: "Creates a new file (name.bend, or name.js for a foreign effect). Refused if it exists. The project is checked right after." },
+          description: "Creates a new file (name.bend, name.js for a foreign effect, or a document: notes.md, todo.txt…). Refused if it exists. The project is checked right after." },
         { name: "delete_file", run: tool_delete, schema: S({ path: str }, ["path"]),
           description: "Deletes a project file (a snapshot is taken first, so the user can bring it back). Refused on locked files, on the file checks start from, and on the last file. The project is checked right after: the files that imported it fail." });
     }
@@ -260,8 +269,9 @@
   function tool_list() {
     return {
       entry: agent.entry,
-      files: state.files.map((f) => ({ path: f.name, lines: f.text.split("\n").length,
-        locked: agent.mode === "holes" || agent_locked(f.name), holes: f.name.endsWith(".bend") ? holes_in(f.text) : [] })),
+      files: state.files.map((f) => Object.assign({ path: f.name, lines: f.text.split("\n").length,
+        locked: agent.mode === "holes" || agent_locked(f.name), holes: f.name.endsWith(".bend") ? holes_in(f.text) : [] },
+        is_doc(f.name) ? { document: true, attached: (state.attach || []).includes(f.name) } : {})),
       hub: hub_imports().map((m) => "hub:" + m.rel),
       fillable: agent.mode === "holes" ? agent.holes.map((h) => "?" + h) : "any hole",
     };
@@ -406,7 +416,8 @@
       throw new Error("this session may only fill its holes, with fill_hole");
     }
     if (agent_locked(path)) {
-      throw new Error(path + " is locked: the user does not want it changed");
+      throw new Error(is_doc(path) ? path + " is a document of the user's, not open to you: they can unlock it in the Agent tab"
+        : path + " is locked: the user does not want it changed");
     }
     return f;
   }
@@ -436,6 +447,10 @@
       throw new Error(name_ok(path, -1));
     }
     state.files.push({ name: path, text: String(input.text ?? "") });
+    // a document the agent made is its to update
+    if (is_doc(path)) {
+      state.doc_write = [...new Set((state.doc_write || []).concat([path]))];
+    }
     agent.current.diff = { file: path, del: [], add: String(input.text ?? "").split("\n").slice(0, 30) };
     proj_touch();
     store_save();
@@ -1002,7 +1017,9 @@
     const rights = agent.mode === "holes"
       ? "You may only fill these holes, with fill_hole: " + agent.holes.map((h) => "?" + h).join(", ") + ". Nothing else in the project can change."
         + (agent.close ? " Each fill must close its goal: the code may not hold a ?hole." : " The code may leave new holes ?name for sub-goals: they become yours to fill too.")
-      : "You may change any file" + (locks.length ? " except these, locked by the user: " + locks.join(", ") : "") + ".";
+      : "You may change any file" + (locks.length ? " except these, locked by the user: " + locks.join(", ") : "") + "."
+        + (state.files.some((f) => is_doc(f.name)) ? " Documents (specs, notes: .md, .txt…) are the user's: you read them, and write only those the user unlocked"
+          + ((state.doc_write || []).length ? " (" + state.doc_write.join(", ") + ")" : " (none now)") + "." : "");
     const build = (inline) => {
       const parts = [rules.join("\n\n"), "<bend_reference>\n" + ref + "\n</bend_reference>", "<chat>\n" + chat + "\n</chat>",
         "<state>\nChecks start from " + agent.entry + ".\n" + JSON.stringify(tool_list(), null, 1) + "\n</state>"];
@@ -1011,6 +1028,16 @@
           + files.map((f) => "<file path=\"" + f.name + "\">\n" + f.text + "\n</file>").join("\n") + "\n</files>");
       } else {
         parts.push("The files are too large to quote here: read them with read_file.");
+      }
+      // documents the user attached to the request, whole (up to a cap)
+      const att = agent_attached();
+      if (att.length) {
+        let room = 120000;
+        parts.push("<attached>\nThe user attached these documents to the task: read them as part of it.\n" + att.map((f) => {
+          const text = f.text.length > room ? f.text.slice(0, Math.max(0, room)) + "\n…[cut: read_file " + f.name + " for the rest]" : f.text;
+          room -= text.length;
+          return "<document path=\"" + f.name + "\"" + (agent_locked(f.name) ? "" : " writable=\"yes\"") + ">\n" + text + "\n</document>";
+        }).join("\n") + "\n</attached>");
       }
       parts.push("<rights>\n" + rights + "\n</rights>");
       if (agent.ended !== "") {
@@ -1352,7 +1379,8 @@
   // resumption, since they may have changed).
   function agent_settings(cfg) {
     return { mode: agent.mode, holes: agent.holes.slice(), close_goals: agent.close, entry: agent.entry,
-      locks: (state.locks || []).slice(), budget: agent.size, language: lang, limits: agent_limits(cfg),
+      locks: (state.locks || []).slice(), attached: (state.attach || []).slice(), documents_writable: (state.doc_write || []).slice(),
+      budget: agent.size, language: lang, limits: agent_limits(cfg),
       profile: { name: cfg.name, provider: cfg.provider, model: cfg.model || AI_PROVIDERS[cfg.provider].model || "",
         url: cfg.provider === "custom" ? cfg.url : undefined },
       tools: agent_tools().map((tl) => ({ name: tl.name, description: tl.description, schema: tl.schema })),
@@ -2469,7 +2497,7 @@
   const UNII_URL = "https://uniichat.com";
 
   function unii_message(task) {
-    const files = state.files.filter((f) => /\.(bend|js)$/.test(f.name));
+    const files = state.files.filter((f) => /\.(bend|js)$/.test(f.name) || (state.attach || []).includes(f.name));
     const m = mem_store.cache.get(state.id);
     const entry = agent.entry || agent_default_entry();
     const history = m && m.msgs.length ? mem_cut(mem_lines(m).join("\n"), 16000) : "";
@@ -2772,6 +2800,8 @@
       ...row(t("agent_mode"), t("agent_mode_" + agent.mode) + (agent.mode === "holes"
         ? ": " + agent.holes.map((h) => "?" + h).join(", ") + (agent.close ? " · " + t("agent_close") : "") : "")),
       ...(agent.mode === "holes" ? [] : row(t("agent_files"), locks.length ? "🔒 " + locks.join(", ") : t("agent_no_locks"))),
+      ...(agent_attached().length ? row(t("agent_attach"), agent_attached().map((f) => "📎 " + f.name
+        + (agent_locked(f.name) ? "" : " ✎")).join(", ")) : []),
       ...row(t("agent_entry"), agent.entry),
       ...row(t("ai_profile"), (ai_cfg() || { name: "?" }).name),
       ...row(t("agent_budget"), String(agent.size)),
@@ -2888,18 +2918,51 @@
         list.append(el("button", { class: "chip" + (on ? " locked" : ""), type: "button", "aria-pressed": String(on),
           "aria-label": on ? t("agent_locked", f.name) : t("agent_unlocked", f.name), text: (on ? "🔒 " : "🔓 ") + f.name,
           onclick: () => {
-            const locks = new Set(state.locks || []);
-            if (locks.has(f.name)) {
-              locks.delete(f.name);
+            // a document is locked unless allowed; code unless locked
+            const key = is_doc(f.name) ? "doc_write" : "locks";
+            const set = new Set(state[key] || []);
+            if (set.has(f.name)) {
+              set.delete(f.name);
             } else {
-              locks.add(f.name);
+              set.add(f.name);
             }
-            state.locks = [...locks];
+            state[key] = [...set];
             store_save();
             agent_paint();
           } }));
       }
-      form.append(el("div", { class: "field" }, el("span", { text: t("agent_files") }), list, el("small", { text: t("agent_lock_hint") })));
+      form.append(el("div", { class: "field" }, el("span", { text: t("agent_files") }), list, el("small", { text: t("agent_lock_hint") }),
+        state.files.some((f) => is_doc(f.name)) ? el("small", { class: "dim", text: t("agent_doc_hint") }) : null));
+    }
+    // documents attached to the request: the project's, or uploaded now
+    {
+      const list = el("div", { class: "row agent-attach" });
+      for (const f of state.files.filter((x) => is_doc(x.name))) {
+        const box = el("input", { type: "checkbox" });
+        box.checked = (state.attach || []).includes(f.name);
+        box.addEventListener("change", () => {
+          const set = new Set(state.attach || []);
+          if (box.checked) {
+            set.add(f.name);
+          } else {
+            set.delete(f.name);
+          }
+          state.attach = [...set];
+          store_save();
+        });
+        list.append(el("label", { class: "chip pickable" }, box, "📎 " + f.name));
+      }
+      const pick = el("input", { type: "file", multiple: true, accept: ".md,.markdown,.txt,.json,.csv,.tsv,.yaml,.yml,.toml,.org,.rst,.adoc,.tex,.html,.xml,.bend,.js,text/*", style: "display:none" });
+      pick.addEventListener("change", async () => {
+        const names = await files_upload([...pick.files]);
+        state.attach = [...new Set((state.attach || []).concat(names.filter(is_doc)))];
+        store_save();
+        agent_paint();
+      });
+      form.append(el("div", { class: "field" }, el("span", { text: t("agent_attach") }),
+        list.childNodes.length ? list : el("small", { class: "dim", text: t("agent_attach_none") }),
+        el("div", { class: "row" }, el("button", { class: "btn", type: "button", text: t("agent_attach_upload"), onclick: () => pick.click() }), pick),
+        el("small", { class: "dim", text: t("agent_attach_hint") })));
     }
     // checked from, profile, budget
     const entry = el("select", { class: "ai-sel", "aria-label": t("agent_entry") });

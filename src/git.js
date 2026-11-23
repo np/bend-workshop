@@ -219,11 +219,16 @@
   // files, the ones gone removed), or read back out. With them, the
   // project's settings (.workshop/project.json: its argument sets) and its
   // data files (test/data/…), so that a commit carries them too.
+  // the project's own files in the tree: its code and its documents
   const GIT_OWN = /\.(bend|js)$/;
+
+  function git_own(p) {
+    return GIT_OWN.test(p) || is_doc(p);
+  }
   const GIT_META = "/.workshop/project.json";
 
   function git_tracked(f) {
-    return GIT_OWN.test(f) || f.startsWith("test/data/") || f === GIT_META.slice(1);
+    return git_own(f) || f.startsWith("test/data/") || f === GIT_META.slice(1);
   }
 
   function git_put(fs, p, data) {
@@ -238,7 +243,7 @@
     const want = new Map(list.map((f) => [fs.norm(f.name), f.text]));
     const data = new Map(own ? state.data.map((d) => [fs.norm("/" + DATA_DIR + d.name), bytes_of(d.b64)]) : []);
     for (const p of [...fs.files.keys()]) {
-      if (!p.startsWith("/.git/") && ((GIT_OWN.test(p) && !want.has(p)) || (own && p.startsWith("/" + DATA_DIR) && !data.has(p)))) {
+      if (!p.startsWith("/.git/") && ((git_own(p) && !want.has(p)) || (own && p.startsWith("/" + DATA_DIR) && !data.has(p)))) {
         fs.files.delete(p);
       }
     }
@@ -277,7 +282,7 @@
   function git_tree_read(fs) {
     const out = [];
     for (const [p, f] of fs.files) {
-      if (!p.startsWith("/.git/") && GIT_OWN.test(p) && f.link === null) {
+      if (!p.startsWith("/.git/") && git_own(p) && f.link === null) {
         out.push({ name: p.slice(1), text: new TextDecoder().decode(f.data) });
       }
     }
@@ -504,7 +509,7 @@
       return out;
     }
     const files = await git.listFiles({ fs, dir: "/", ref: oid });
-    for (const f of files.filter((x) => GIT_OWN.test(x))) {
+    for (const f of files.filter((x) => git_own(x))) {
       const { blob } = await git.readBlob({ fs, dir: "/", oid, filepath: f });
       out.push([f, new TextDecoder().decode(blob)]);
     }

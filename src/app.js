@@ -187,7 +187,7 @@
   function proj_pack() {
     return { id: state.id, name: state.name, scratch: state.scratch, updated: state.updated,
       files: state.files, active: state.active, argsets: state.argsets, argset: state.argset, data: state.data,
-      locks: state.locks || [], carets: state.carets || {} };
+      locks: state.locks || [], carets: state.carets || {}, attach: state.attach || [], doc_write: state.doc_write || [] };
   }
 
   function proj_unpack(p) {
@@ -207,6 +207,9 @@
     state.argset = Math.min(Math.max(0, p.argset | 0), state.argsets.length - 1);
     state.data = Array.isArray(p.data) ? p.data.filter((d) => d && typeof d.name === "string" && typeof d.b64 === "string") : [];
     state.locks = Array.isArray(p.locks) ? p.locks.filter((x) => typeof x === "string") : [];
+    // documents attached to the agent's sessions, and those it may write
+    state.attach = Array.isArray(p.attach) ? p.attach.filter((x) => typeof x === "string") : [];
+    state.doc_write = Array.isArray(p.doc_write) ? p.doc_write.filter((x) => typeof x === "string") : [];
     state.carets = p.carets && typeof p.carets === "object" ? p.carets : {};
     store.snaps = ls_get(LS_SNAP + p.id) || [];
     if (!Array.isArray(store.snaps)) {
@@ -687,7 +690,8 @@
 
   function ed_paint() {
     const text = ed.ta.value;
-    ed.hl.innerHTML = (file_now().name.endsWith(".js") ? highlight_js(text) : highlight(text)) + "\n";
+    const fname = file_now().name;
+    ed.hl.innerHTML = (fname.endsWith(".js") ? highlight_js(text) : is_doc(fname) ? esc(text) : highlight(text)) + "\n";
     const n = text.split("\n").length;
     let g = "";
     for (let i = 1; i <= n; i++) {
@@ -5694,8 +5698,18 @@
 
   // A module's path is plain names, as the loader wants: math.bend, not
   // math.extra.bend. An effect's .js takes any plain file name.
+  // Documents: plain text kept with the project (a spec, notes), edited
+  // here, never checked; the agent reads them, and writes them only when
+  // the user allows it. Not the data files (test/data/) nor .workshop/.
+  const DOC_RE = /\.(md|markdown|txt|text|json|csv|tsv|ya?ml|toml|org|rst|adoc|tex|bib|html?|css|xml|ini|cfg|log)$/i;
+
+  function is_doc(name) {
+    return DOC_RE.test(name) && !/(^|\/)(test\/data|\.workshop|\.git)\//.test(name);
+  }
+
   function name_ok(name, skip) {
-    if (!/^([A-Za-z_][\w-]*\/)*[A-Za-z_][\w-]*\.bend$/.test(name) && !/^([A-Za-z_][\w-]*\/)*[A-Za-z0-9_][\w.-]*\.js$/.test(name)) {
+    if (!/^([A-Za-z_][\w-]*\/)*[A-Za-z_][\w-]*\.bend$/.test(name) && !/^([A-Za-z_][\w-]*\/)*[A-Za-z0-9_][\w.-]*\.js$/.test(name)
+      && !(/^([A-Za-z0-9_][\w.-]*\/)*[A-Za-z0-9_][\w.-]*$/.test(name) && is_doc(name))) {
       return t("name_rule");
     }
     if (skip !== -2 && state.files.some((f, i) => f.name === name && i !== skip)) {
@@ -6027,6 +6041,40 @@ def trace_at(a, -A: Kind(a), msg: String, x: A) -> A:
     live_soon();
   }
 
+  // Text files chosen by the user, added to the project (a document, code):
+  // the name made safe, kept apart from one already there; a file that is
+  // not text is refused, saying so. Answers the names added.
+  async function files_upload(list) {
+    const added = [];
+    const refused = [];
+    for (const file of list) {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const text = file_text(bytes);
+      let name = file.name.replace(/^.*[\\/]/, "").replace(/[^\w.-]+/g, "_").replace(/^[.-]+/, "") || "file.txt";
+      if (!/\.(bend|js)$/.test(name) && !is_doc(name)) {
+        name += ".txt";
+      }
+      if (text === null || name_ok(name, -2) !== "") {
+        refused.push(file.name);
+        continue;
+      }
+      const stem = name.replace(/(\.[^.]+)$/, "");
+      const ext = name.slice(stem.length);
+      for (let n = 2; state.files.some((f) => f.name === name); n++) {
+        name = stem + "-" + n + ext;
+      }
+      state.files.push({ name, text: text.replace(/\r\n/g, "\n") });
+      added.push(name);
+    }
+    if (added.length) {
+      proj_touch();
+      store_save();
+      files_paint();
+    }
+    toast(refused.length ? t("upload_refused", refused.join(", ")) : t("upload_done", added.length));
+    return added;
+  }
+
   function name_sheet(i) {
     if (agent_guard()) {
       return;
@@ -6036,9 +6084,20 @@ def trace_at(a, -A: Kind(a), msg: String, x: A) -> A:
       autocorrect: "off", spellcheck: "false", value: fresh ? "" : state.files[i].name,
       placeholder: "lib.bend" });
     const note = el("small", { text: fresh ? t("import_hint") : "" });
+    // text files from the device, into this project (documents, code)
+    const upload = el("input", { type: "file", multiple: true, style: "display:none" });
+    upload.addEventListener("change", async () => {
+      close();
+      const names = await files_upload([...upload.files]);
+      if (names.length) {
+        files_pick(state.files.findIndex((f) => f.name === names[0]));
+      }
+    });
     const go = el("button", { class: "btn primary", type: "button", text: fresh ? t("create_file") : t("rename") });
     const body = el("div", { class: "form" }, el("label", {}, t("file_name"), input, note),
       el("div", { class: "row" }, go),
+      fresh ? el("div", { class: "row" }, el("button", { class: "btn", type: "button", text: t("upload_files"), onclick: () => upload.click() }),
+        upload) : null,
       fresh ? el("div", { class: "field" }, el("span", { text: t("debug_title") }),
         el("small", { class: "dim", text: t("debug_hint") }),
         el("div", { class: "row" }, el("button", { class: "btn", type: "button", text: t("debug_add"),
@@ -6054,7 +6113,8 @@ def trace_at(a, -A: Kind(a), msg: String, x: A) -> A:
       }
       proj_touch();
       if (fresh) {
-        const text = name.endsWith(".bend") ? "import Base\n\n" : "// " + name + "\n";
+        const text = name.endsWith(".bend") ? "import Base\n\n" : name.endsWith(".js") ? "// " + name + "\n"
+          : /\.(md|markdown)$/i.test(name) ? "# " + name.replace(/^.*\//, "").replace(/\.\w+$/, "") + "\n\n" : "";
         state.files.push({ name, text });
         close();
         files_pick(state.files.length - 1);
@@ -6394,7 +6454,8 @@ def trace_at(a, -A: Kind(a), msg: String, x: A) -> A:
       const dotgit = !all && /(^|\/)\.git\//.test(name);
       const datafile = !all && /(^|\/)test\/data\/[^/]+$/.test(name);
       if (name.endsWith("/") || name.startsWith("__MACOSX/") || (csize > 4e6 && !memo)
-        || (all ? /\.(png|jpe?g|gif|zip|gz|wasm|bin|o|a|so|dylib|exe)$/i.test(name) : !/\.(bend|js)$/.test(name) && !memo && !dotgit && !datafile)) {
+        || (all ? /\.(png|jpe?g|gif|zip|gz|wasm|bin|o|a|so|dylib|exe)$/i.test(name)
+          : !/\.(bend|js)$/.test(name) && !memo && !dotgit && !datafile && !is_doc(name))) {
         continue;
       }
       const from = local + 30 + v.getUint16(local + 26, true) + v.getUint16(local + 28, true);
