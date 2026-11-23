@@ -4318,6 +4318,11 @@
       row.append(el("button", { class: "btn", type: "button", text: t(kind === "split" ? "split_law" : "merge_law"),
         onclick: () => { close(); refactor(d, file_now().name); } }));
     }
+    // a law of a project file: tried on small values
+    if (d.kind === "law" && d.file !== null && !String(d.file).startsWith("hub:")) {
+      row.append(el("button", { class: "btn", type: "button", text: t("sc_btn"), title: t("sc_hint"),
+        onclick: () => { close(); small_sheet(d); } }));
+    }
     // a project file's declaration: renamed everywhere, or moved elsewhere
     if (ref_ok(d)) {
       row.append(el("button", { class: "btn", type: "button", text: t("rn_btn"), onclick: () => { close(); rename_sheet(d); } }));
@@ -5700,6 +5705,284 @@
   }
 
   // name_sheet(null) creates a file; name_sheet(i) renames file i.
+  // Small check
+  // ===========
+  // A law tried on small values before one sets out to prove it: each
+  // combination of small values of its for binders (at most SMALL_CAP),
+  // the claim at those values written as a def whose body is {==}, and the
+  // checker says whether it holds (closed terms normalize). A claim
+  // H1 -> ... -> {a == b : T} counts a case only when its hypotheses hold
+  // (each tried the same way). Only the law's file up to the law is read,
+  // so holes and errors below it do not matter.
+
+  const SMALL_CAP = 32;
+
+  // A type's arguments: Maybe<Nat> gives ["Nat"].
+  function type_args(ty) {
+    const lt = ty.indexOf("<");
+    if (lt < 0) {
+      return [];
+    }
+    const gt = angle_close(ty, lt);
+    return gt < 0 ? [] : split_top(ty.slice(lt + 1, gt));
+  }
+
+  // Small values of a type, as terms; null when it has none to try (a
+  // function, a Type).
+  function small_values(ty, file, depth) {
+    const text = ty.trim().replace(/^\((.*)\)$/s, "$1").trim();
+    if (/->|=>/.test(text.replace(/<[^<>]*>/g, "")) || /^(Type|Data|Kind)\b/.test(text)) {
+      return null;
+    }
+    const parts = split_top(text.replace(/\s*&\s*/g, ", ")).length > 1 && / & /.test(text) ? text.split(/\s+&\s+/) : null;
+    if (parts) {
+      const a = small_values(parts[0], file, depth);
+      const b = small_values(parts.slice(1).join(" & "), file, depth);
+      if (!a || !b) {
+        return null;
+      }
+      const out = [];
+      for (const x of a.slice(0, 3)) {
+        for (const y of b.slice(0, 3)) {
+          out.push("(" + x + ", " + y + ")");
+        }
+      }
+      return out;
+    }
+    const head = type_head(text);
+    const args = type_args(text).filter((x) => !/^&\d$/.test(x));
+    switch (head) {
+      case "Nat": return ["0n", "1n", "2n", "3n"];
+      case "U32": return ["0", "1", "2", "4294967295"];
+      case "Bool": return ["False{}", "True{}"];
+      case "Char": return ["'a'", "'0'"];
+      case "String": return ["\"\"", "\"a\"", "\"ab\""];
+      case "F32": return ["0.0", "1.0", "-1.5"];
+      case "Unit": return ["Unit{}"];
+      case "List": {
+        const el = args.length ? small_values(args[args.length - 1], file, depth - 1) : null;
+        if (!el || el.length === 0) {
+          return ["[]"];
+        }
+        const out = ["[]", "[" + el[0] + "]"];
+        if (el.length > 1) {
+          out.push("[" + el[1] + ", " + el[0] + "]");
+        }
+        if (depth > 1 && el.length > 2) {
+          out.push("[" + el.slice(0, 3).join(", ") + "]");
+        }
+        return out;
+      }
+    }
+    if (!/^[A-Z]/.test(head)) {
+      return null;
+    }
+    const ctors = ctors_for((/^[A-Za-z_][\w.]*/.exec(text) || [""])[0], file);
+    if (ctors.length === 0) {
+      return null;
+    }
+    // the type's parameters, as its declaration names them, to its arguments
+    const tdecl = (decls_of(file).concat(state.files.flatMap((f) => decls_of(f.name)), decls_of(null)))
+      .find((d) => d.kind === "type" && (d.name === head || d.name === head.split(".").pop()));
+    const named = tdecl ? tdecl.params.filter((p) => p.includes(":")).map(param_name) : [];
+    const sub = (t) => named.reduce((acc, n, i) => args[i] === undefined ? acc
+      : acc.replace(new RegExp("(^|[^\\w.])" + n.replace(/[.$]/g, "\\$&") + "(?![\\w.])", "g"), (m, pre) => pre + "(" + args[i] + ")"), t);
+    const out = [];
+    for (const c of ctors.slice().sort((x, y) => x.params.length - y.params.length)) {
+      const fields = c.params.map((p) => sub(p.replace(/^[^:]*:\s*/, "")));
+      if (fields.length === 0) {
+        out.push(c.name + "{}");
+        continue;
+      }
+      if (depth <= 0) {
+        continue;
+      }
+      const vals = fields.map((ft) => small_values(ft, file, depth - 1));
+      if (vals.some((v) => !v || v.length === 0)) {
+        continue;
+      }
+      // the first value of each field, then each field's second in turn
+      out.push(c.name + "{" + vals.map((v) => v[0]).join(", ") + "}");
+      vals.forEach((v, i) => {
+        if (v.length > 1) {
+          out.push(c.name + "{" + vals.map((w, j) => (j === i ? w[1] : w[0])).join(", ") + "}");
+        }
+      });
+    }
+    return out.length ? out.slice(0, 5) : null;
+  }
+
+  // A claim with its binders replaced by values (names as whole words).
+  function claim_at(claim, binds) {
+    let out = claim;
+    for (const [name, v] of binds) {
+      out = out.replace(new RegExp("(^|[^\\w.'\"])" + name.replace(/[.$]/g, "\\$&") + "(?![\\w.])", "g"), (m, pre) => pre + "(" + v + ")");
+    }
+    return out;
+  }
+
+  // Tries the law named name of file. Answers { law, file, cases, held,
+  // vacuous, values: {binder: [values]}, failed: {binds, message} | null,
+  // why (it could not be tried) }.
+  async function law_small(name, file, progress) {
+    const d = decls_of(file).find((x) => x.kind === "law" && x.name === name);
+    const out = { law: name, file, cases: 0, held: 0, vacuous: 0, values: {}, failed: null, why: "" };
+    if (!d) {
+      out.why = t("sc_no_law", name);
+      return out;
+    }
+    const lines = d.text.split("\n");
+    const binders = [];
+    const claim = [];
+    for (const l of lines.slice(1)) {
+      const b = /^\s+for\s+(.*?)\s*(#.*)?$/.exec(l);
+      if (b) {
+        const m = /^([+\-]?)([A-Za-z_]\w*)\s*:\s*(.*)$/.exec(b[1]);
+        if (!m) {
+          out.why = t("sc_binder", b[1]);
+          return out;
+        }
+        binders.push({ name: m[2], ty: m[3] });
+      } else if (/^\s*(exs|where)\b/.test(l)) {
+        out.why = t("sc_exs");
+        return out;
+      } else if (l.trim() !== "" && !/^\s*#/.test(l)) {
+        claim.push(l.trim());
+      }
+    }
+    const parts = arrow_parts(claim.join(" ")).map((x) => x.replace(/^@[\w']+\s*:\s*/, "").trim());
+    if (parts.some((x) => !/^\{[\s\S]*\}$/.test(x))) {
+      out.why = t("sc_not_eq");
+      return out;
+    }
+    // each binder's values, earlier ones put in later ones' types
+    const lists = [];
+    for (const b of binders) {
+      const v = small_values(b.ty, file, 2);
+      if (v === null || v.length === 0) {
+        out.why = t("sc_no_values", b.name, b.ty);
+        return out;
+      }
+      lists.push(v);
+    }
+    const product = () => lists.reduce((n, l) => n * l.length, 1);
+    while (product() > SMALL_CAP) {
+      const big = lists.reduce((m, l, i) => (l.length > lists[m].length ? i : m), 0);
+      lists[big] = lists[big].slice(0, lists[big].length - 1);
+    }
+    binders.forEach((b, i) => {
+      out.values[b.name] = lists[i];
+    });
+    const cases = [[]];
+    for (const l of lists) {
+      const next = [];
+      for (const c of cases) {
+        for (const v of l) {
+          next.push(c.concat([v]));
+        }
+      }
+      cases.splice(0, cases.length, ...next);
+    }
+    out.cases = cases.length;
+    // the law's file, up to the law; the checks' defs after it
+    const f = state.files.find((x) => x.name === file);
+    const head = f.text.split("\n").slice(0, d.line - 1 + lines.length).join("\n") + "\n";
+    const files = files_map();
+    const probe = async (claims) => {
+      const defs = claims.map((c, i) => "\ndef small_check_" + i + "() -> " + c + ":\n  {==}\n");
+      const r = await comp_ask(file, false, { ...files, [file]: head + defs.join("") });
+      if (r.ok || r.open || !r.where) {
+        return { bad: -1 };
+      }
+      const base = head.split("\n").length;
+      const at = r.where.file === file || r.where.file === null || r.where.file === undefined ? r.where.line - base : -1;
+      return { bad: at >= 0 ? Math.floor(at / 3) : -2, r };
+    };
+    const binds = (c) => binders.map((b, i) => [b.name, c[i]]);
+    const hyps = parts.slice(0, -1);
+    const goal = parts[parts.length - 1];
+    if (hyps.length === 0) {
+      // all the cases at once: the first that fails says which
+      let todo = cases.slice();
+      while (todo.length > 0) {
+        const got = await probe(todo.map((c) => claim_at(goal, binds(c))));
+        if (got.bad === -2) {
+          out.why = t("sc_file_fails", err_brief(got.r));
+          return out;
+        }
+        if (got.bad === -1) {
+          out.held += todo.length;
+          break;
+        }
+        out.held += got.bad;
+        out.failed = { binds: Object.fromEntries(binds(todo[got.bad])), message: err_brief(got.r) };
+        break;
+      }
+      return out;
+    }
+    for (let k = 0; k < cases.length; k++) {
+      if (progress) {
+        progress(k, cases.length);
+      }
+      const c = cases[k];
+      let vacuous = false;
+      for (const h of hyps) {
+        const got = await probe([claim_at(h, binds(c))]);
+        if (got.bad === -2) {
+          out.why = t("sc_file_fails", err_brief(got.r));
+          return out;
+        }
+        if (got.bad >= 0) {
+          vacuous = true;
+          break;
+        }
+      }
+      if (vacuous) {
+        out.vacuous += 1;
+        continue;
+      }
+      const got = await probe([claim_at(goal, binds(c))]);
+      if (got.bad === -2) {
+        out.why = t("sc_file_fails", err_brief(got.r));
+        return out;
+      }
+      if (got.bad >= 0) {
+        out.failed = { binds: Object.fromEntries(binds(c)), message: err_brief(got.r) };
+        return out;
+      }
+      out.held += 1;
+    }
+    return out;
+  }
+
+  // The law's sheet: try it, and say what came of it.
+  async function small_sheet(d) {
+    const body = el("div", { class: "small-check" }, el("p", { class: "dim", text: t("sc_running") }));
+    sheet_open(t("sc_title", d.name), body);
+    const got = await law_small(d.name, d.file, (k, n) => {
+      body.firstChild.textContent = t("sc_progress", k, n);
+    });
+    body.textContent = "";
+    body.append(small_report(got));
+  }
+
+  function small_report(got) {
+    const box = el("div", {});
+    if (got.why) {
+      box.append(el("p", { class: "sc-why", text: got.why }));
+      return box;
+    }
+    if (got.failed) {
+      box.append(el("p", { class: "sc-false", text: t("sc_false") }),
+        el("pre", { class: "decl", text: Object.entries(got.failed.binds).map(([k, v]) => k + " = " + v).join("\n") }),
+        el("p", { class: "dim", text: got.failed.message }));
+    } else {
+      box.append(el("p", { class: "sc-held", text: t("sc_held", got.held, got.vacuous) }));
+    }
+    box.append(el("small", { class: "dim", text: t("sc_values") + " " + Object.entries(got.values).map(([k, v]) => k + " ∈ {" + v.join(", ") + "}").join("; ") }));
+    return box;
+  }
+
   // debug.bend: Debug.trace, as Haskell's (see js_traced): the file made
   // if missing, its import added to the open .bend file (one undo step).
   const DEBUG_BEND = `# Debugging, as Haskell's Debug.Trace. trace(T, msg, x) is x: everywhere

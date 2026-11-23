@@ -162,6 +162,8 @@
         description: "Lists every hole ?name in the project: file, line, the def it is in, whether you may fill it, and, when the checker reached it, its goal and context. Holes the checker did not reach (behind an error) are listed too, with the reason." },
       { name: "check", run: tool_check, schema: S({ file: str }),
         description: "Checks the project from a file (default: the session's). Returns the verdict, the error with its place, every open goal with its context, and check_ms, the checking time in milliseconds (every write's verdict carries it too)." },
+      { name: "small_check", run: tool_small, schema: S({ law: str, file: str }, ["law"]),
+        description: "Tries a law on small values before you set out to prove it: each combination of small values of its for binders (at most 32), the claim at those values checked by {==}. Returns how many cases held, and the first counterexample with the checker's message if one fails. Holding is not a proof. Claims made of equalities only (hypotheses too); file: where the law is (default: found in the project)." },
       { name: "list_args", run: tool_args, schema: S({}),
         description: "Lists the project's argument sets for running its main (their names and arguments, the active one) and its data files (test/data/…), which a running program can read by path." },
       { name: "run", run: tool_run, schema: S({ file: str, args: { type: "array", items: str }, set: str }),
@@ -439,6 +441,24 @@
     store_save();
     files_paint();
     return agent_after();
+  }
+
+  async function tool_small(input) {
+    const name = String(input.law || "").trim();
+    let file = input.file ? String(input.file) : null;
+    if (file === null) {
+      const f = state.files.find((x) => decls_of(x.name).some((d) => d.kind === "law" && d.name === name));
+      if (!f) {
+        throw new Error("no law " + name + " in the project's files");
+      }
+      file = f.name;
+    }
+    const got = await law_small(name, file);
+    if (got.why) {
+      throw new Error(got.why);
+    }
+    return got.failed ? { law: name, file, verdict: "false", counterexample: got.failed.binds, checker: got.failed.message, cases_held_before: got.held }
+      : { law: name, file, verdict: "held on small values (not a proof)", cases: got.held, vacuous: got.vacuous, values: got.values };
   }
 
   async function tool_delete(input) {

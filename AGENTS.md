@@ -422,6 +422,21 @@ type), the goal after `⊢`, and a toolbar.
   `(%e : P; ?hole)`, as Bend reads a rewrite anywhere a term goes. This
   replaces the `#goal:` → hand-written `%` → `_` loop.
 - **AI.** See *Assistant* below.
+- **Small check** (a law's sheet, *Try on small values*; the agent's
+  `small_check`): is a law false before one sets out to prove it? Each
+  combination of small values of its `for` binders (`small_values`: Nat
+  0n..3n, U32 0, 1, 2, 2^32-1, Bool, Char, String, F32, lists of up to three,
+  pairs, and a data type's constructors with their fields filled two levels
+  deep, its type arguments put in; at most 32 cases, the longest lists cut
+  first) is put in the claim (`claim_at`, whole words) and written as a
+  def whose body is `{==}`; the checker judges, since closed terms
+  normalize. Only the law's file up to the law is read, so holes and errors
+  below it do not matter. Without hypotheses, every case goes in one check
+  and the first failing def names the counterexample; a claim `H1 -> … ->
+  {a == b : T}` checks each case's hypotheses first and counts it only when
+  they hold (the others are reported apart). A function or a type as a
+  binder, a claim that is not made of equalities, `exs`/`where`: refused,
+  saying why. Holding is not a proof, and the sheet says so.
 - **Law ⇄ def** (from a signature's sheet). It splits a typed def into
   `law` + an untyped `def`, with the claim laid out, or merges them back. It is
   refused with `exs`/`where` or `~` parameters.
@@ -706,7 +721,8 @@ type), the goal after `⊢`, and a toolbar.
   exact, unique replacement), `create_file`, `delete_file` (a snapshot
   kept first; refused for a locked file, the file checks start from and the
   last file; the check after says which files imported it),
-  `fill_hole`, `check` (with `check_ms`, the checking time, which every
+  `fill_hole`, `small_check` (a law on small values: held, or its first
+  counterexample, as the law's sheet does), `check` (with `check_ms`, the checking time, which every
   write's verdict carries too: what to watch when asked to make a file
   check faster), `run` (a main, 10 s, output capped; arguments as a list,
   or a set by name, else the active set; the data files readable; the
@@ -995,7 +1011,10 @@ type), the goal after `⊢`, and a toolbar.
   `<&>`, a type's sheet), `autoindent` (Enter after brackets, desktop and
   touch), `format` (the sheet's button and the shortcut, comments kept, one
   Undo), `debug_trace` (debug.bend added with its import, the traces in
-  order, the debugger statement in the run's source, worker and page), `sig_params` (a parameter called, its arrow type, the
+  order, the debugger statement in the run's source, worker and page),
+  `small_check` (a law held, a false one and its counterexample, a
+  hypothesis, a list, a type of the file, a function binder refused; the
+  agent's tool), `sig_params` (a parameter called, its arrow type, the
   argument bold; a type's parameters over a two-line header), `project_versions` (the id in the
   zip, a version imported, Undo, a snapshot exported, diffs, an unknown
   id kept), `todo_goals` (`?TODO` cards, no snippet during the agent), `lawdef_pong`, `operators`, `opcalls`,
