@@ -166,6 +166,20 @@ in `runner-prelude.js`. Output is batched; Stop is `terminate`. Without workers
 it runs through `new Function`, then a `<script>` tag. `IO.args()` gets the
 program name, then the active argument set's arguments.
 
+**Debug.trace.** Bend's foreign code is IO only, so a pure trace is plain
+Bend: `debug.bend` (the files' **+** sheet, *Add debug.bend*, which also
+imports it as `Debug` into the open file) defines `trace(-A: Type, msg,
+x) -> A` and `trace_at(a, -A: Kind(a), msg, x) -> A`, both `x`: they check,
+prove and compile anywhere (the CLI, C) as the identity, `msg` built and
+dropped. In the workshop's runs (`js_traced`, applied by `run_source`, so
+the agent's runs too), the compiled identity, any `$…trace` or
+`$…trace_at` of `(_msg_0, _x_0)` returning `_x_0`, prints `trace: msg` to
+stderr (`__bend_trace`) and stops at a `debugger` statement, which the
+browser's developer tools break on when open. The run's source is named
+`bend-program.js` (`//# sourceURL`), worker or page. Bend is strict: the
+message and the value are built at the call, innermost first. The
+Compiled tab shows the CLI's output, untouched.
+
 **Arguments and files.** A project keeps named argument sets
 (`state.argsets`, `state.argset` the active one; Settings: a dropdown, the
 set's name and line, New set, Delete the set) and data files
@@ -980,7 +994,8 @@ type), the goal after `⊢`, and a toolbar.
   when its bar closes), `sig_types` (type parameters marked, kinds with
   `<&>`, a type's sheet), `autoindent` (Enter after brackets, desktop and
   touch), `format` (the sheet's button and the shortcut, comments kept, one
-  Undo), `sig_params` (a parameter called, its arrow type, the
+  Undo), `debug_trace` (debug.bend added with its import, the traces in
+  order, the debugger statement in the run's source, worker and page), `sig_params` (a parameter called, its arrow type, the
   argument bold; a type's parameters over a two-line header), `project_versions` (the id in the
   zip, a version imported, Undo, a snapshot exported, diffs, an unknown
   id kept), `todo_goals` (`?TODO` cards, no snippet during the agent), `lawdef_pong`, `operators`, `opcalls`,

@@ -197,6 +197,11 @@
       return "timed-out";
     }
   };
+  // Debug.trace's message, to stderr, as Haskell's trace does
+  function __bend_trace(msg) {
+    var text = typeof str_out === "function" ? str_out(msg) : String(msg);
+    __fs.writeSync(2, new TextEncoder().encode("trace: " + text + "\n"));
+  }
   var __fail = function () { return -1; };
   globalThis.BEND_IO = undefined;
   globalThis.BEND_SYS = {

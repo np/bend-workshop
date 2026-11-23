@@ -712,7 +712,7 @@
         run_page(js, cfg, put).then((g) => fin({ exit: g.code, files: g.files || [] }), (e) => fin({ exit: 1, error: String(e) }));
       };
       try {
-        const src = WORKER_HOST + "(" + JSON.stringify(cfg) + ");\n" + run_source(js, false) + "(__bendHost);";
+        const src = WORKER_HOST + "(" + JSON.stringify(cfg) + ");\n" + run_source(js, false) + "(__bendHost);\n//# sourceURL=bend-program.js\n";
         w = new Worker(URL.createObjectURL(new Blob([src], { type: "text/javascript" })));
       } catch (e) {
         page();

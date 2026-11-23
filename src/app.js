@@ -1377,7 +1377,22 @@
 
   function run_source(js, display) {
     return PRELUDE.replace("/*__TAIL__*/", () => (display ? TAIL : ""))
-      .replace("/*__PROGRAM__*/", () => js);
+      .replace("/*__PROGRAM__*/", () => js_traced(js));
+  }
+
+  // Debug.trace (debug.bend, which the files' + offers): in Bend the
+  // identity, trace(T, msg, x) = x, so it checks, proves and compiles
+  // anywhere as x. In the workshop's runs, the compiled identity (any
+  // def named trace or trace_at with parameters msg and x) prints
+  // "trace: msg" to stderr and stops at a debugger statement, which the
+  // browser's developer tools break on when open.
+  const TRACE_DEF = /function (\$[\w$]*?trace(?:_at)?)\(_msg_0, _x_0\) \{\n  return _x_0;\n\}/g;
+
+  function js_traced(js) {
+    return js.replace(TRACE_DEF, (m, name) => "function " + name + "(_msg_0, _x_0) {\n"
+      + "  __bend_trace(_msg_0);\n"
+      + "  debugger; // Debug.trace: step out (Shift+F11) to the code that called it\n"
+      + "  return _x_0;\n}");
   }
 
   function run_worker(js, cfg, on_out) {
@@ -1386,7 +1401,7 @@
       let w;
       try {
         const src = WORKER_HOST + "(" + JSON.stringify(cfg) + ");\n"
-          + run_source(js, uses_window(js)) + "(__bendHost);";
+          + run_source(js, uses_window(js)) + "(__bendHost);\n//# sourceURL=bend-program.js\n";
         w = new Worker(URL.createObjectURL(new Blob([src], { type: "text/javascript" })));
       } catch (e) {
         fail(e);
@@ -1498,7 +1513,7 @@
       }
       const src = run_source(js, display);
       try {
-        new Function("__h", "return (\n" + src + "\n)(__h);")(host);
+        new Function("__h", "return (\n" + src + "\n)(__h);\n//# sourceURL=bend-program.js\n")(host);
       } catch (e) {
         if (!host.alive && (e instanceof EvalError || /unsafe-eval|Content Security/i.test(String(e)))) {
           window.__bendHost = host;
@@ -5685,6 +5700,50 @@
   }
 
   // name_sheet(null) creates a file; name_sheet(i) renames file i.
+  // debug.bend: Debug.trace, as Haskell's (see js_traced): the file made
+  // if missing, its import added to the open .bend file (one undo step).
+  const DEBUG_BEND = `# Debugging, as Haskell's Debug.Trace. trace(T, msg, x) is x: everywhere
+# (the bend CLI, C, a proof) msg is built and dropped. In the workshop's
+# runs, it prints "trace: msg" to the output (stderr) and stops at a
+# debugger statement, which the browser's developer tools break on when
+# they are open (F12; the code is bend-program.js, the call one step out).
+# Bend is strict: msg is built at the call, x first.
+#
+#   import ./debug.bend as Debug
+#   Debug.trace(Nat, "n = " ++ Nat.show(n), f(n))
+import Base
+
+# x, for a type of Data (Nat, U32, a list, a type of yours)
+def trace(-A: Type, msg: String, x: A) -> A:
+  x
+
+# x, for any kind: a the quantity (&0, &1 or &2), as List.length takes it
+def trace_at(a, -A: Kind(a), msg: String, x: A) -> A:
+  x
+`;
+
+  function debug_add() {
+    if (agent_guard()) {
+      return;
+    }
+    const f = file_now();
+    if (!state.files.some((x) => x.name === "debug.bend")) {
+      proj_touch();
+      state.files.push({ name: "debug.bend", text: DEBUG_BEND });
+      files_paint();
+    }
+    if (view.file === null && f.name.endsWith(".bend") && f.name !== "debug.bend" && !/^import\s+\S*debug\.bend\s+as\s+/m.test(f.text)) {
+      const path = mv_relpath(f.name, "debug.bend");
+      // a file that already writes Debug.trace, with no import bound to
+      // Debug, gets exactly that alias
+      const bound = /^import\s+\S+\s+as\s+Debug\s*$/m.test(f.text);
+      const alias = !bound && /(^|[^\w.])Debug\.\w/.test(f.text) ? "Debug" : mv_alias(f.text, f.name, "Debug");
+      ed_add_import("import " + path + " as " + alias);
+    }
+    toast(t("debug_added"));
+    live_soon();
+  }
+
   function name_sheet(i) {
     if (agent_guard()) {
       return;
@@ -5696,7 +5755,11 @@
     const note = el("small", { text: fresh ? t("import_hint") : "" });
     const go = el("button", { class: "btn primary", type: "button", text: fresh ? t("create_file") : t("rename") });
     const body = el("div", { class: "form" }, el("label", {}, t("file_name"), input, note),
-      el("div", { class: "row" }, go));
+      el("div", { class: "row" }, go),
+      fresh ? el("div", { class: "field" }, el("span", { text: t("debug_title") }),
+        el("small", { class: "dim", text: t("debug_hint") }),
+        el("div", { class: "row" }, el("button", { class: "btn", type: "button", text: t("debug_add"),
+          onclick: () => { close(); debug_add(); } }))) : null);
     const close = sheet_open(fresh ? t("new_file") : t("rename"), body);
     const submit = () => {
       const name = input.value.trim();
