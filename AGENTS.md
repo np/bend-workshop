@@ -886,8 +886,12 @@ type), the goal after `⊢`, and a toolbar.
   *Conversation* and *Memory*.
 - **A server that fails** (an API profile: Anthropic, OpenAI, an
   OpenAI-shaped server; `agent_post`). A request that fails as a server
-  does (no network, HTTP 5xx, 404, 408, 425, 429, a 400 about the model:
-  `agent_down`) is not an error yet: the page asks the server for its
+  does (no network, HTTP 5xx, 404, 408, 425, 429, a 400 whose body says
+  the server stopped or failed: the model, terminated, aborted, crash,
+  overloaded, restarting, loading, a timeout, out of memory…, as a local
+  server's `{"error":"terminated"}` when its generation died:
+  `agent_down`; a 400 about the request itself, as a context too long,
+  ends the session at once) is not an error yet: the page asks the server for its
   models (`ai_models`) every minute (`REVIVE_MS`; `?revive_ms=` in tests),
   gives up after 10 failed lists; once it lists, asks again for as long as
   30 lists until the session's model is there (`model_listed`, `:latest`
@@ -1090,7 +1094,8 @@ type), the goal after `⊢`, and a toolbar.
   settings readable during the session),
   `agent_revive` (a server failing mid-session: the list failing, then
   without the model, then with it, the same request sent again; 10 failed
-  lists, 30 without the model, Stop during the wait),
+  lists, 30 without the model, Stop during the wait; a 400
+  `{"error":"terminated"}` waited out, a 400 about the request not),
   `agent_attach` (a document uploaded, a binary refused, edited, attached
   whole to the prompt, locked to the agent then unlocked and written,
   uploaded from the agent's form; in the zip, in git, imported back),

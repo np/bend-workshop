@@ -1119,7 +1119,11 @@
       return true;
     }
     const st = e.status | 0;
-    return st >= 500 || st === 404 || st === 408 || st === 425 || st === 429 || (st === 400 && /model/i.test(e.body || ""));
+    // a 400 is a fault of the request, unless it says the server itself
+    // stopped or failed ({"error":"terminated"} from a local server whose
+    // generation died, a model not loaded, overloaded, restarting…)
+    const down = /model|terminat|abort|cancel+ed|crash|killed|unavailable|overload|restart|loading|shutting|shut down|time[ds]? ?out|connection|reset|out of memory|\boom\b|worker|engine|backend|internal/i;
+    return st >= 500 || st === 404 || st === 408 || st === 425 || st === 429 || (st === 400 && down.test(e.body || ""));
   }
 
   function agent_sleep(ms) {

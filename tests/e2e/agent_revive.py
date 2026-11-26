@@ -11,7 +11,7 @@ PROOF = "import Base\n\nlaw add_zero:\n  for x: Nat\n  {Nat.add(x, 0n) == x : Na
 CORS = {"access-control-allow-origin": "*", "access-control-allow-headers": "*", "access-control-allow-methods": "*"}
 def check(label, ok, *more):
     print(("ok   " if ok else "!! FAIL ") + label, *[str(m)[:300] for m in more])
-def run(b, plan_models, chat_fail_at, stop_during=False, label=""):
+def run(b, plan_models, chat_fail_at, stop_during=False, label="", fail=(503, "model server restarting")):
     st = {"chat": 0, "models": 0, "bodies": []}
     def server(route):
         r = route.request
@@ -26,7 +26,7 @@ def run(b, plan_models, chat_fail_at, stop_during=False, label=""):
             return route.fulfill(status=200, content_type="application/json", headers=CORS, body=json.dumps({"data": [{"id": i} for i in ids]}))
         n = st["chat"]; st["chat"] += 1
         st["bodies"].append(json.loads(r.post_data))
-        if n == chat_fail_at: return route.fulfill(status=503, headers=CORS, body="model server restarting")
+        if n == chat_fail_at: return route.fulfill(status=fail[0], headers=CORS, content_type="application/json", body=fail[1])
         k = n - (1 if n > chat_fail_at else 0)
         if k == 0: msg = {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "fill_hole", "arguments": json.dumps({"hole": "base", "code": "{==}"})}}]}
         elif k == 1: msg = {"role": "assistant", "content": "", "tool_calls": [{"id": "c2", "type": "function", "function": {"name": "fill_hole", "arguments": json.dumps({"hole": "step", "code": "{==}"})}}]}
@@ -75,5 +75,13 @@ with sync_playwright() as p:
     # 4 Stop while waiting
     got = run(b, ["without"], 1, stop_during=True)
     check("4 Stop ends the wait", got["st"]["models"] < 30 and got["st"]["chat"] == 2, got["st"]["models"], got["st"]["chat"])
+    # 5 a local server's generation dying: 400 {"error":"terminated"}
+    got = run(b, ["with"], 1, fail=(400, '{"error":"terminated" }'))
+    check("5 400 terminated: waited, then the session went on", "The server is back" in got["pane"] and "?step" not in got["code"]
+          and got["st"]["chat"] == 4, got["st"])
+    # 6 a fault of the request itself: no wait, the session ends on it
+    got = run(b, ["with"], 1, fail=(400, '{"error":"context length exceeded"}'))
+    check("6 a real 400: no model list asked, the session ended", got["st"]["models"] == 0 and got["st"]["chat"] == 2
+          and "context length exceeded" in got["pane"], got["st"])
     for e in got["errs"]: print("!!", e[:200])
     b.close()
