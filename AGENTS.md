@@ -779,7 +779,17 @@ type), the goal after `⊢`, and a toolbar.
   whose halves fit on one line is their join, free; else the compactor
   writes it, a cheap model given the messages the line covers (up to
   `ctx` bytes), UniiChat's instructions, and a ruler, asked again while
-  too long, the shortest kept, the join cut to fit with no answer. The
+  too long, the shortest kept, the join cut to fit when the answers stay
+  too long. A compactor that does not answer at all (its server down)
+  writes nothing: the merges wait (`compactor_down`; the journal's memory
+  entry says so) and the view stays over its budget until it is back; only
+  past twice the budget are halves cut to fit, each marked a cut
+  (`m.cut`), not counted a summary. The Memory view finds the cut lines
+  (`mem_suspects`: marked, or, from before the mark, a head and a tail
+  around " … " filling the line to the byte), says the messages under them
+  are whole, and *Rewrite n lines* asks the compactor for each, lowest
+  first (`mem_rewrite`; stopped, keeping the cut, at the first without an
+  answer). The
   compactor is Claude's quick tier in the viewer; with an API, the
   profile's *model for the memory's summaries* (Haiku for Anthropic, else
   the chat's model; picked from the server's list of models, or typed). Unlike UniiChat, a message's own line is not
@@ -891,15 +901,18 @@ type), the goal after `⊢`, and a toolbar.
   overloaded, restarting, loading, a timeout, out of memory…, as a local
   server's `{"error":"terminated"}` when its generation died:
   `agent_down`; a 400 about the request itself, as a context too long,
-  ends the session at once) is not an error yet: the page asks the server for its
-  models (`ai_models`) every minute (`REVIVE_MS`; `?revive_ms=` in tests),
+  ends the session at once) is not an error yet: the page waits a minute
+  first, every time (a server whose generation was just "terminated" still
+  lists the model for a few seconds, and an immediate retry fails again),
+  then asks the server for its models (`ai_models`), every minute
+  (`REVIVE_MS`; `?revive_ms=` in tests),
   gives up after 10 failed lists; once it lists, asks again for as long as
   30 lists until the session's model is there (`model_listed`, `:latest`
   aside); then sends the very same request again, so the conversation goes
   on as if nothing happened: no error enters the messages or the memory.
   The journal has one note that follows the wait (tries, then "the server
   is back after n s"); the trace has `server_down`, `server_back`,
-  `server_gone`, `model_gone`. Stop cancels the wait. At most three waits a
+  `server_gone`, `model_gone`. Stop cancels the wait. At most ten waits a
   request; given up, the session ends with the error as before. Claude in
   the viewer has no model list, so it is not waited for.
 - **Taking a session up again** (by hand). A session that ended (an error, a stop,
@@ -1083,7 +1096,9 @@ type), the goal after `⊢`, and a toolbar.
   past sessions after a reload), `agent_memory` (the view in each Claude
   call, zoom, the memory across sessions and a reload, merges through the
   quick tier past a small budget, the prompt cap, the Memory view and its
-  search, shallow and deep, forget and Undo), `agent_memory_tabs` (a session in
+  search, shallow and deep, forget and Undo), `memory_cuts` (cut lines of
+  an older page found, rewritten through the quick tier, stored),
+  `agent_memory_tabs` (a session in
   each of two tabs on one project, both kept, after a reload too; a session
   whose memory read failed, merged after what was stored), `agent_memory_api` (Haiku summaries with a simulated
   Anthropic server, a long turn started again from the memory),

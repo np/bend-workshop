@@ -1584,3 +1584,5 @@ button.goal-name { text-decoration: underline; text-underline-offset: 3px; }
 .git-changes { flex-direction: column; align-items: stretch; }
 .git-changes > .row { gap: 4px; }
 .confirm p { margin: 0 0 12px; line-height: 1.45; }
+.mem-cuts { border: 1px solid var(--line); border-left: 3px solid var(--warn, #c80); border-radius: 6px; padding: 8px 10px; margin: 8px 0; }
+.mem-cuts p { margin: 0 0 6px; }

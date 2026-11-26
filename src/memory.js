@@ -153,7 +153,12 @@ Name a minor item in a word or two rather than drop it. Copy names, numbers, pat
   // Builds node (l,i): the join of its halves when it fits on a line, else
   // the compactor's line (asked again while too long, the shortest kept;
   // with no answer, the join cut to fit). ask(system, user) answers a text.
-  async function mem_build(m, l, i, ask, ctx) {
+  // A summary that could not be asked for (the compactor did not answer:
+  // its server down, a crash) is not written as one: with cut_ok false the
+  // merge waits ({code: "compactor_down"}), with it true the halves' join is
+  // cut to fit and marked (m.cut), to be rewritten once the compactor is
+  // back (mem_suspects, mem_rewrite).
+  async function mem_build(m, l, i, ask, ctx, cut_ok = true) {
     const k = l + "," + i;
     if (m.nodes[k] !== undefined) {
       return false;
@@ -176,6 +181,9 @@ Name a minor item in a word or two rather than drop it. Copy names, numbers, pat
         if (e && e.code === "cancelled") {
           throw e;
         }
+        if (best === null && !cut_ok) {
+          throw { code: "compactor_down", error: e };
+        }
         break;
       }
       if (line === "") {
@@ -191,9 +199,60 @@ Name a minor item in a word or two rather than drop it. Copy names, numbers, pat
     }
     if (m.nodes[k] === undefined) {
       m.nodes[k] = best !== null && mem_bytes(best) <= MEM_NODE ? best : mem_cut(best || join, MEM_NODE);
+      if (best === null) {
+        // no answer at all: a cut, not a summary
+        m.cut = m.cut || {};
+        m.cut[k] = true;
+        return "cut";
+      }
       m.made += 1;
     }
     return true;
+  }
+
+  // The lines that are cuts rather than summaries: marked as such, or, from
+  // before the mark, a join of two halves cut in its middle to the line's
+  // size: a head and a tail around " … ", filling the line to the byte (the
+  // " ⁞ " between the halves is often what the cut took).
+  function mem_suspects(m) {
+    return Object.keys(m.nodes).filter((k) => {
+      const [l] = k.split(",").map(Number);
+      if (l === 0) {
+        return false;
+      }
+      const x = m.nodes[k];
+      return (m.cut && m.cut[k]) || (x.includes(" … ") && mem_bytes(x) >= MEM_NODE - 8);
+    }).map((k) => k.split(",").map(Number)).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  }
+
+  // Rewrites the cut lines through the compactor, lowest first (a line
+  // reads the messages it covers, not the lines under it). Stops at the
+  // first that gets no answer, which keeps its cut. Answers how many.
+  async function mem_rewrite(m, ask, ctx, step) {
+    const todo = mem_suspects(m);
+    let done = 0;
+    for (const [l, i] of todo) {
+      const k = l + "," + i;
+      const old = m.nodes[k];
+      delete m.nodes[k];
+      try {
+        await mem_build(m, l, i, ask, ctx, false);
+      } catch (e) {
+        m.nodes[k] = old;
+        if (e && e.code === "cancelled") {
+          throw e;
+        }
+        break;
+      }
+      if (m.cut) {
+        delete m.cut[k];
+      }
+      done += 1;
+      if (step) {
+        step(done, todo.length);
+      }
+    }
+    return { done, of: todo.length };
   }
 
   // Past its budget, the view merges its most due pairs, jobs at a time,
@@ -213,8 +272,20 @@ Name a minor item in a word or two rather than drop it. Copy names, numbers, pat
       if (pairs.length === 0) {
         break;
       }
-      const got = await Promise.all(pairs.map((p) => mem_build(m, p.l + 1, p.i / 2, ask, ctx)));
-      asked += got.filter(Boolean).length;
+      // the compactor silent: the merges wait, unless the view is past
+      // twice its budget (then cuts, marked, to be rewritten later)
+      const cut_ok = mem_size(m) > 2 * high;
+      let got;
+      try {
+        got = await Promise.all(pairs.map((p) => mem_build(m, p.l + 1, p.i / 2, ask, ctx, cut_ok)));
+      } catch (e) {
+        if (e && e.code === "compactor_down") {
+          told(1);
+          return { merged, asked, down: true };
+        }
+        throw e;
+      }
+      asked += got.filter((x) => x === true).length;
       for (const p of pairs) {
         const k = m.view.findIndex(([l, i]) => l === p.l && i === p.i);
         const next = m.view[k + 1];

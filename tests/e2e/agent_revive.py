@@ -11,7 +11,7 @@ PROOF = "import Base\n\nlaw add_zero:\n  for x: Nat\n  {Nat.add(x, 0n) == x : Na
 CORS = {"access-control-allow-origin": "*", "access-control-allow-headers": "*", "access-control-allow-methods": "*"}
 def check(label, ok, *more):
     print(("ok   " if ok else "!! FAIL ") + label, *[str(m)[:300] for m in more])
-def run(b, plan_models, chat_fail_at, stop_during=False, label="", fail=(503, "model server restarting")):
+def run(b, plan_models, chat_fail_at, stop_during=False, label="", fail=(503, "model server restarting"), revive=40):
     st = {"chat": 0, "models": 0, "bodies": []}
     def server(route):
         r = route.request
@@ -19,6 +19,7 @@ def run(b, plan_models, chat_fail_at, stop_during=False, label="", fail=(503, "m
         if "/api/tags" in r.url:
             return route.fulfill(status=500, headers=CORS, body="down")
         if "/v1/models" in r.url:
+            st.setdefault("t_list", time.time())
             k = st["models"]; st["models"] += 1
             what = plan_models[min(k, len(plan_models) - 1)]
             if what == "fail": return route.fulfill(status=500, headers=CORS, body="down")
@@ -26,7 +27,9 @@ def run(b, plan_models, chat_fail_at, stop_during=False, label="", fail=(503, "m
             return route.fulfill(status=200, content_type="application/json", headers=CORS, body=json.dumps({"data": [{"id": i} for i in ids]}))
         n = st["chat"]; st["chat"] += 1
         st["bodies"].append(json.loads(r.post_data))
-        if n == chat_fail_at: return route.fulfill(status=fail[0], headers=CORS, content_type="application/json", body=fail[1])
+        if n == chat_fail_at:
+            st["t_fail"] = time.time()
+            return route.fulfill(status=fail[0], headers=CORS, content_type="application/json", body=fail[1])
         k = n - (1 if n > chat_fail_at else 0)
         if k == 0: msg = {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "fill_hole", "arguments": json.dumps({"hole": "base", "code": "{==}"})}}]}
         elif k == 1: msg = {"role": "assistant", "content": "", "tool_calls": [{"id": "c2", "type": "function", "function": {"name": "fill_hole", "arguments": json.dumps({"hole": "step", "code": "{==}"})}}]}
@@ -39,7 +42,7 @@ def run(b, plan_models, chat_fail_at, stop_during=False, label="", fail=(503, "m
     page = ctx.new_page()
     errs = []
     page.on("pageerror", lambda e: errs.append(str(e)))
-    page.goto("http://localhost:8123/index.html?revive_ms=40"); page.wait_for_selector("#verdict", timeout=30000); time.sleep(0.5)
+    page.goto("http://localhost:8123/index.html?revive_ms=%d" % revive); page.wait_for_selector("#verdict", timeout=30000); time.sleep(0.5)
     page.evaluate("""(code) => { const ta = document.querySelector('#ed-ta'); ta.focus(); ta.select(); document.execCommand('insertText', false, code); }""", PROOF)
     page.wait_for_selector("#verdict[data-state=goal]", timeout=30000); time.sleep(0.8)
     page.click(".tab[data-tab=agent]"); time.sleep(0.4)
@@ -76,7 +79,9 @@ with sync_playwright() as p:
     got = run(b, ["without"], 1, stop_during=True)
     check("4 Stop ends the wait", got["st"]["models"] < 30 and got["st"]["chat"] == 2, got["st"]["models"], got["st"]["chat"])
     # 5 a local server's generation dying: 400 {"error":"terminated"}
-    got = run(b, ["with"], 1, fail=(400, '{"error":"terminated" }'))
+    got = run(b, ["with"], 1, fail=(400, '{"error":"terminated" }'), revive=1500)
+    check("5 nothing before the wait: the list asked a \"minute\" (1.5 s here) after the failure", got["st"]["t_list"] - got["st"]["t_fail"] >= 1.4,
+          round(got["st"]["t_list"] - got["st"]["t_fail"], 2))
     check("5 400 terminated: waited, then the session went on", "The server is back" in got["pane"] and "?step" not in got["code"]
           and got["st"]["chat"] == 4, got["st"])
     # 6 a fault of the request itself: no wait, the session ends on it

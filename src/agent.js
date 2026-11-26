@@ -256,9 +256,12 @@
     } finally {
       agent.shrink = null;
       if (entry !== null) {
-        Object.assign(entry, r || {}, { state: r ? "ok" : "err" });
+        Object.assign(entry, r || {}, { state: !r ? "err" : r.down ? "down" : "ok" });
       }
       agent_paint_soon();
+    }
+    if (r.down) {
+      trace("memory_deferred", { view: mem_size(agent.mem), budget: lim.memory });
     }
     if (r.merged > 0) {
       trace("memory", { merged: r.merged, compactions: r.asked, view: mem_size(agent.mem), messages: agent.mem.msgs.length });
@@ -1108,7 +1111,8 @@
   // every REVIVE_MS, given up after 10 failed lists; once it lists, asked
   // again for as long as 30 lists until the model is there; then the same
   // request again, so the conversation goes on as if nothing happened (no
-  // error enters it). Stop cancels the wait. At most 3 such waits a request.
+  // error enters it). Stop cancels the wait. At most 10 such waits a
+  // request, each a minute at least.
   const REVIVE_MS = Number(new URLSearchParams(location.search).get("revive_ms")) || 60000;
 
   function agent_down(e) {
@@ -1155,6 +1159,9 @@
     let fails = 0;
     let missing = 0;
     for (;;) {
+      // a minute first, every time: a server whose generation was just
+      // "terminated" may still list the model for a few seconds
+      await agent_sleep(REVIVE_MS);
       let ids = null;
       try {
         ids = await ai_models(cfg);
@@ -1185,7 +1192,6 @@
       note.text = ids === null ? t("agent_server_wait_list", err.message, fails, 10)
         : t("agent_server_wait_model", model, missing, 30);
       agent_paint_soon();
-      await agent_sleep(REVIVE_MS);
     }
   }
 
@@ -1194,7 +1200,7 @@
       try {
         return await agent_post_once(url, headers, body);
       } catch (e) {
-        if (!cfg || revived >= 3 || !agent_down(e)) {
+        if (!cfg || revived >= 10 || !agent_down(e)) {
           throw e;
         }
         await agent_revive(cfg, e);
@@ -2397,6 +2403,28 @@
     const lim = agent_limits(ai_cfg());
     box.append(el("p", { class: "dim", text: t("mem_stats", m.msgs.length, m.view.length, kb(mem_size(m)), kb(lim.memory), m.made) }),
       el("small", { class: "dim", text: t("mem_hint") }));
+    // lines cut while the summaries' model did not answer: rewritten on a tap
+    const cuts = mem_suspects(m);
+    if (cuts.length > 0) {
+      const cfg = ai_cfg();
+      const go = el("button", { class: "btn", type: "button", text: t("mem_rewrite", cuts.length), disabled: agent.running || cfg === null });
+      const said = el("small", { class: "dim", text: t("mem_cuts_hint") });
+      go.addEventListener("click", async () => {
+        go.disabled = true;
+        const pid = state.id;
+        try {
+          const r = await mem_rewrite(m, mem_asker(cfg), agent_limits(cfg).ctx, (k, n) => {
+            said.textContent = t("mem_rewriting", k, n);
+          });
+          mem_save(pid);
+          toast(r.done === r.of ? t("mem_rewritten", r.done) : t("mem_rewrite_stopped", r.done, r.of));
+        } catch (e) {
+          toast(t("mem_rewrite_stopped", 0, cuts.length));
+        }
+        agent_paint();
+      });
+      box.append(el("div", { class: "mem-cuts" }, el("p", { text: t("mem_cuts", cuts.length) }), el("div", { class: "row" }, go), said));
+    }
     if (m.msgs.length === 0) {
       box.append(el("p", { class: "empty", text: t("mem_empty") }));
       return box;
@@ -3026,7 +3054,7 @@
     }
     if (e.kind === "memory") {
       return el("div", { class: "ag-note ag-mem" + (e.state === "run" ? " run" : ""),
-        text: e.state === "run" ? t("ag_mem_run") : t("ag_mem_done", e.merged || 0, e.asked || 0) });
+        text: e.state === "run" ? t("ag_mem_run") : e.state === "down" ? t("ag_mem_down", e.merged || 0) : t("ag_mem_done", e.merged || 0, e.asked || 0) });
     }
     if (e.kind === "verdict") {
       return el("div", { class: "ag-verdict " + (e.ok ? "ok" : e.open ? "goal" : "bad"), text: t("agent_verdict", e.text) });

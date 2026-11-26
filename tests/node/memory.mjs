@@ -3,7 +3,7 @@
 import fs from "node:fs";
 const src = fs.readFileSync("src/memory.js", "utf8");
 const core = src.slice(0, src.indexOf("  // Storage"));
-const M = new Function(core + "\nreturn { mem_new, mem_push, mem_lines, mem_size, mem_pairs, mem_shrink, mem_zoom, mem_search, mem_text, mem_bytes, mem_name, mem_merge, mem_sync, MEM_NODE };")();
+const M = new Function(core + "\nreturn { mem_new, mem_push, mem_lines, mem_size, mem_pairs, mem_shrink, mem_zoom, mem_search, mem_text, mem_bytes, mem_name, mem_merge, mem_sync, mem_suspects, mem_rewrite, mem_cut, MEM_NODE };")();
 let bad = 0;
 const expect = (label, cond, more) => { console.log((cond ? "ok  " : "BAD ") + label + (more !== undefined ? "  " + more : "")); if (!cond) bad++; };
 let calls = 0;
@@ -96,6 +96,25 @@ const ask = async (system, user) => {
   for (let i = 0; i < 2; i++) M.mem_push(m3, "tool", "v".repeat(600));
   await M.mem_shrink(m3, 10, async () => { throw { code: "http" }; }, 1, 1000);
   expect("no compactor: the halves cut to fit", M.mem_bytes(M.mem_text(m3, 1, 0)) <= M.MEM_NODE && M.mem_lines(m3).length === 1);
+  expect("past twice the budget, a cut is marked, not counted a summary", m3.cut && m3.cut["1,0"] === true && m3.made === 0);
+  // within twice the budget, a silent compactor makes the merges wait
+  const m4 = M.mem_new();
+  for (let i = 0; i < 4; i++) M.mem_push(m4, "tool", "w" + i + " " + "w".repeat(600));
+  const before = M.mem_lines(m4).join("\n");
+  const r4 = await M.mem_shrink(m4, M.mem_size(m4) - 10, async () => { throw { code: "http" }; }, 2, 1000);
+  expect("compactor down: no merge, the view as it was", r4.down === true && r4.merged === 0 && M.mem_lines(m4).join("\n") === before && Object.keys(m4.nodes).every((k) => k.startsWith("0,")));
+  // the cuts found (marked, and an old one by its shape), then rewritten
+  m3.nodes["2,9"] = M.mem_cut("x".repeat(400) + " ⁞ " + "y".repeat(400), M.MEM_NODE);
+  const sus = M.mem_suspects(m3).map((x) => x.join(","));
+  expect("cuts found: the marked one and one by its shape", sus.includes("1,0") && sus.includes("2,9"), sus.join(" "));
+  delete m3.nodes["2,9"];
+  const r3 = await M.mem_rewrite(m3, async () => "a real summary of both", 1000);
+  expect("rewritten through the compactor", r3.done === 1 && M.mem_text(m3, 1, 0) === "a real summary of both" && !m3.cut["1,0"] && M.mem_suspects(m3).length === 0, JSON.stringify(r3));
+  const m5 = M.mem_new();
+  for (let i = 0; i < 2; i++) M.mem_push(m5, "tool", "v".repeat(600));
+  await M.mem_shrink(m5, 10, async () => { throw { code: "http" }; }, 1, 1000);
+  const r5 = await M.mem_rewrite(m5, async () => { throw { code: "http" }; }, 1000);
+  expect("still silent: the cut kept, marked", r5.done === 0 && m5.cut["1,0"] === true && M.mem_bytes(M.mem_text(m5, 1, 0)) <= M.MEM_NODE);
 }
 // stored and written: two tabs, a loose memory, a replacement, a failed write
 {
