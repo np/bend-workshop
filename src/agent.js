@@ -42,9 +42,11 @@
   // compaction reads; with an API, tokens: one reply's length.
   const AGENT_LIMITS = {
     claude: { files: 40000, result: 6000, memory: 48000, ctx: 8000 },
-    api: { files: 80000, result: 6000, memory: 96000, ctx: 16000, tokens: 4096 },
+    // context: the turn's own exchange (the conversation with the API since
+    // the brief), in bytes of JSON; past it, it is compacted
+    api: { files: 80000, result: 6000, memory: 96000, ctx: 16000, tokens: 4096, context: 400000 },
   };
-  const AGENT_LIMIT_MAX = { files: 200000, result: 50000, memory: 200000, ctx: 64000, tokens: 128000 };
+  const AGENT_LIMIT_MAX = { files: 200000, result: 50000, memory: 200000, ctx: 64000, tokens: 128000, context: 4000000 };
   // A Claude call's prompt: what sample.limits() reports, less a margin for
   // the platform's own framing; 256 KiB when it reports nothing.
   function sample_bytes() {
@@ -152,7 +154,9 @@
       { name: "zoom", run: tool_zoom, schema: S({ id: { type: "integer" }, n: { type: "integer" } }, ["id"]),
         description: "Opens the line id+n of <chat>, your memory, into the two lines of n/2 messages under it; n = 1 (the default) gives message id whole." },
       { name: "search", run: tool_search, schema: S({ text: str }, ["text"]),
-        description: "Finds the messages of <chat>, your memory, that hold a text (any case), latest first, with their id and the words around it." },
+        description: "Finds the messages of <chat>, your memory, that hold a text (any case), latest first, with their id and the words around it. To search code, use grep." },
+      { name: "grep", run: tool_grep, schema: S({ pattern: str, path: str, regex: { type: "boolean" }, ignore_case: { type: "boolean" }, context: { type: "integer" } }, ["pattern"]),
+        description: "Searches the code like grep: every line of the project's files (or of path: a file, a folder prefix such as lib/, Base, a hub: module, or * for the project, Base and the hub modules) that holds pattern, as file:line: text, with context lines around when asked. pattern is plain text unless regex is true (a JavaScript regular expression). At most 200 lines." },
     ];
     if (!holes) {
       tools.push(
@@ -186,6 +190,64 @@
     return mem_zoom(agent.mem || mem_new(), input.id, input.n === undefined ? 1 : input.n);
   }
 
+  function tool_grep(input) {
+    const pat = String(input.pattern || "");
+    if (pat === "") {
+      throw new Error("pattern is empty");
+    }
+    let re;
+    try {
+      re = new RegExp(input.regex ? pat : pat.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), input.ignore_case ? "i" : "");
+    } catch (e) {
+      throw new Error("not a regular expression: " + e.message);
+    }
+    const where = String(input.path || "").trim();
+    const around = Math.max(0, Math.min(5, Number(input.context) | 0));
+    const sources = [];
+    const base = () => sources.push(["Base", Core.base_text()]);
+    const hubs = () => hub_imports().forEach((m) => hub.files[m.rel] !== undefined && sources.push(["hub:" + m.rel, hub.files[m.rel]]));
+    if (where === "" || where === "*") {
+      state.files.forEach((f) => sources.push([f.name, f.text]));
+      if (where === "*") {
+        base();
+        hubs();
+      }
+    } else if (/^base(\.bend)?$/i.test(where)) {
+      base();
+    } else if (where.startsWith("hub:")) {
+      const text = hub.files[where.slice(4)];
+      if (text === undefined) {
+        throw new Error("no hub module " + where);
+      }
+      sources.push([where, text]);
+    } else {
+      state.files.filter((f) => f.name === where || f.name.startsWith(where.replace(/\/?$/, "/"))).forEach((f) => sources.push([f.name, f.text]));
+      if (sources.length === 0) {
+        throw new Error("no file or folder " + where);
+      }
+    }
+    const out = [];
+    let hits = 0;
+    for (const [name, text] of sources) {
+      const lines = text.split("\n");
+      let shown = -1;
+      lines.forEach((l, i) => {
+        if (!re.test(l)) {
+          return;
+        }
+        hits += 1;
+        if (out.length >= 200) {
+          return;
+        }
+        for (let k = Math.max(shown + 1, i - around); k <= Math.min(lines.length - 1, i + around); k++) {
+          out.push(name + ":" + (k + 1) + (k === i ? ": " : "- ") + lines[k]);
+          shown = k;
+        }
+      });
+    }
+    return { matches: hits, lines: out.length ? out.join("\n") : "(no line holds it)", cut: out.length >= 200 ? "more than 200 lines: narrow the pattern or the path" : undefined };
+  }
+
   function tool_search(input) {
     return mem_search(agent.mem || mem_new(), input.text);
   }
@@ -201,8 +263,9 @@
 
   // The compactor: Claude at its quick tier in the viewer; with an API, the
   // profile's compactor model (Haiku for Anthropic, else the chat's own).
-  function mem_asker(cfg) {
-    const signal = agent.ctl ? agent.ctl.signal : undefined;
+  // own: a signal of the caller's own (null: none), else the session's
+  function mem_asker(cfg, own) {
+    const signal = own !== undefined ? own || undefined : agent.ctl ? agent.ctl.signal : undefined;
     const log = (model, t0, text) => trace("memory_call", { model, ms: Math.round(performance.now() - t0), reply: String(text).slice(0, 600) });
     if (cfg.provider === "claude") {
       return async (system, user) => {
@@ -1050,6 +1113,9 @@
           + (agent.notes.length ? "\nThe user's instructions for going on, latest last:\n" + agent.notes.map((n) => "- " + n).join("\n") : "")
           + "\n</resumed>");
       }
+      if ((agent.told || []).length) {
+        parts.push("<user_said>\nWhile you worked, the user said (latest last):\n" + agent.told.map((x) => "- " + x).join("\n") + "\n</user_said>");
+      }
       parts.push("<task>\n" + agent.task + "\n</task>");
       return parts.join("\n\n");
     };
@@ -1065,6 +1131,10 @@
     for (;;) {
       const before = agent.steps;
       await agent_settle(cfg);
+      // the user's words sent meanwhile are in this call's brief (<user_said>)
+      if ((agent.inbox || []).length) {
+        trace("user_message", { texts: agent.inbox.splice(0) });
+      }
       const say = agent_log({ kind: "say", text: "" });
       const opts = { signal: agent.ctl.signal,
         onText: ({ text }) => {
@@ -1311,13 +1381,208 @@
     return { text: text.join(""), think: think.filter(Boolean).join("\n\n") };
   }
 
+  // The context: with an API, the turn's own exchange (the brief, then the
+  // model's replies and the tools' answers), kept apart from the memory
+  // and limited by its own setting (context, bytes of JSON). Past it, it is
+  // compacted, in steps, each said in the journal: the old tools' answers
+  // (all but the last CTX_KEEP messages) cut to their start, since every
+  // one of them is in the memory whole; if that is not enough, the oldest
+  // steps summarised by the memory's model into a <so_far> section of the
+  // first message, the recent ones kept as they are; only if that fails,
+  // the conversation starts again from the memory. A session taken up
+  // again (by hand, or by the page) goes on with the same conversation,
+  // told why it stopped and what the user said.
+  const CTX_KEEP = 8;
+  const CTX_SYSTEM = "You compact an agent's working context. You are given the first part of a work session of an agent (an AI) on a Bend 2 project: its replies, the tools it called with their input, and what they answered (cut). Write, for the agent itself, what it must keep to go on without them: the task as it understood it, what it did and found (files, defs, holes, errors, verdicts), what it decided and why, what it tried that failed, and what it was about to do next. Plain text, at most 40 short lines, no preamble.";
+
+  function ctx_bytes(msgs) {
+    return new TextEncoder().encode(JSON.stringify(msgs.slice(1))).length;
+  }
+
+  function ctx_kb(n) {
+    return Math.round(n / 1000) + " KB";
+  }
+
+  // What a message of the exchange says, as text, for a summary.
+  function ctx_text(m) {
+    const cut = (x, n) => (x.length > n ? x.slice(0, n) + "…[" + x.length + " characters]" : x);
+    const parts = [];
+    const content = m.content;
+    if (typeof content === "string" && content !== "") {
+      parts.push(cut(content, 4000));
+    } else if (Array.isArray(content)) {
+      for (const b of content) {
+        if (b.type === "text" && b.text) {
+          parts.push(cut(b.text, 4000));
+        } else if (b.type === "tool_use") {
+          parts.push("[calls " + b.name + " " + cut(JSON.stringify(b.input || {}), 1500) + "]");
+        } else if (b.type === "tool_result") {
+          parts.push("[" + (b.is_error ? "error" : "answer") + ": " + cut(typeof b.content === "string" ? b.content : JSON.stringify(b.content), 1500) + "]");
+        }
+      }
+    }
+    for (const c of m.tool_calls || []) {
+      parts.push("[calls " + (c.function && c.function.name) + " " + cut(String((c.function && c.function.arguments) || ""), 1500) + "]");
+    }
+    return (m.role === "assistant" ? "agent: " : m.role === "tool" ? "tool: " : "user: ") + parts.join("\n");
+  }
+
+  // The old tools' answers cut to their start; answers how many.
+  function ctx_elide(msgs) {
+    let n = 0;
+    const note = (x) => x.slice(0, 200) + "\n…[cut to keep the context small: " + x.length + " characters; the whole answer is in your memory (search, zoom), or call the tool again]";
+    for (let i = 1; i < msgs.length - CTX_KEEP; i++) {
+      const m = msgs[i];
+      if (m.role === "tool" && typeof m.content === "string" && m.content.length > 400 && !m.content.includes("…[cut to keep the context small")) {
+        m.content = note(m.content);
+        n += 1;
+      } else if (m.role === "user" && Array.isArray(m.content)) {
+        for (const b of m.content) {
+          if (b.type === "tool_result" && typeof b.content === "string" && b.content.length > 400 && !b.content.includes("…[cut to keep the context small")) {
+            b.content = note(b.content);
+            n += 1;
+          }
+        }
+      }
+    }
+    return n;
+  }
+
+  // Compacts msgs in place; answers false when it could not (the caller
+  // then starts again from the memory).
+  async function ctx_compact(cfg, msgs, lim) {
+    const before = ctx_bytes(msgs);
+    const elided = ctx_elide(msgs);
+    let now = ctx_bytes(msgs);
+    if (now <= lim.context * 0.7) {
+      agent_log({ kind: "context", text: t("ctx_elided", elided, ctx_kb(before), ctx_kb(now), ctx_kb(lim.context)) });
+      trace("context", { action: "elide", answers: elided, before, after: now, limit: lim.context });
+      agent.api_seen = 0;
+      return true;
+    }
+    // the oldest steps into a summary: up to the first reply of the
+    // agent's from which the rest fits in 60% of the limit (the last round
+    // kept whatever its size)
+    const rest = (i) => new TextEncoder().encode(JSON.stringify(msgs.slice(i))).length;
+    let c = 1;
+    for (let i = 2; i < msgs.length; i++) {
+      if (msgs[i].role === "assistant") {
+        c = i;
+        if (rest(i) <= lim.context * 0.6) {
+          break;
+        }
+      }
+    }
+    if (c <= 1) {
+      return false;
+    }
+    const head = typeof msgs[0].content === "string" ? msgs[0].content : "";
+    const earlier = (/\n\n<so_far>\n[\s\S]*?\n<\/so_far>$/.exec(head) || [""])[0];
+    let text = (earlier ? "Your summary of the steps before these:\n" + earlier + "\n\n" : "") + msgs.slice(1, c).map(ctx_text).join("\n\n");
+    const room = Math.max(8000, lim.ctx * 4);
+    if (text.length > room) {
+      text = text.slice(0, room / 2) + "\n…\n" + text.slice(-room / 2);
+    }
+    const entry = agent_log({ kind: "context", text: t("ctx_summing", c - 1, ctx_kb(before)) });
+    let sum = "";
+    try {
+      sum = String(await mem_asker(cfg)(CTX_SYSTEM, text)).trim();
+    } catch (e) {
+      if (e && e.code === "cancelled") {
+        throw e;
+      }
+      sum = "";
+    }
+    if (sum === "") {
+      entry.text = t("ctx_sum_failed", ctx_kb(before));
+      agent_paint_soon();
+      return false;
+    }
+    msgs.splice(1, c - 1);
+    msgs[0].content = head.replace(/\n\n<so_far>\n[\s\S]*?\n<\/so_far>$/, "") + "\n\n<so_far>\n(Your own summary of the first steps of this turn, written when the conversation grew long; every step is in <chat> too.)\n" + sum + "\n</so_far>";
+    now = ctx_bytes(msgs);
+    entry.text = t("ctx_summed", c - 1, elided, ctx_kb(before), ctx_kb(now), ctx_kb(lim.context));
+    entry.summary = sum;
+    trace("context", { action: "summary", steps: c - 1, answers: elided, before, after: now, limit: lim.context, summary: sum });
+    agent.api_seen = 0;
+    agent_paint_soon();
+    return true;
+  }
+
+  // A conversation taken up again: tool calls left unanswered (a stop in
+  // their midst) answered as not run, then a word from the page or the user.
+  function convo_close(msgs, anth) {
+    const last = msgs[msgs.length - 1];
+    if (!last || last.role !== "assistant") {
+      return;
+    }
+    const calls = anth ? (Array.isArray(last.content) ? last.content.filter((b) => b.type === "tool_use") : []) : last.tool_calls || [];
+    if (calls.length === 0) {
+      return;
+    }
+    const why = "Not run: the session stopped before this call.";
+    if (anth) {
+      msgs.push({ role: "user", content: calls.map((c) => ({ type: "tool_result", tool_use_id: c.id, content: why, is_error: true })) });
+    } else {
+      msgs.push(...calls.map((c) => ({ role: "tool", tool_call_id: c.id, content: "Error: " + why })));
+    }
+  }
+
+  function convo_say(msgs, anth, text) {
+    const last = msgs[msgs.length - 1];
+    if (last && last.role === "user") {
+      if (typeof last.content === "string") {
+        last.content += "\n\n" + text;
+      } else if (Array.isArray(last.content)) {
+        last.content.push({ type: "text", text });
+      }
+      return;
+    }
+    msgs.push({ role: "user", content: text });
+  }
+
+  // What a conversation taken up again is told: why it stopped, the
+  // settings and rights as they stand now, the user's words.
+  function convo_resumed() {
+    const brief = agent_brief(false);
+    // the last section so named (the rules name the tags in their text)
+    const pick = (tag) => {
+      const all = brief.match(new RegExp("<" + tag + ">\\n[\\s\\S]*?\\n</" + tag + ">", "g")) || [];
+      return all.length ? all[all.length - 1] : "";
+    };
+    return ["The session stopped (" + agent.ended + ") and is taken up again, this conversation kept. The files may have changed meanwhile: read them again before editing them.",
+      pick("state"), pick("attached"), pick("rights"), pick("resumed")].filter(Boolean).join("\n\n");
+  }
+
+  // A word from the user while the agent works: in the journal and the
+  // memory now, in the conversation before the next request.
+  function agent_tell(text) {
+    agent.inbox = agent.inbox || [];
+    agent.inbox.push(text);
+    agent.told = (agent.told || []).concat([text]);
+    agent_log({ kind: "note", text: "» " + text + "  (" + t("agent_tell_sent") + ")" });
+    mem_log("user", "(while the agent worked) " + text);
+    agent_paint_soon();
+  }
+
+  // The user's words sent while the agent works, into the conversation
+  // before the next request.
+  function convo_inbox(msgs, anth) {
+    if (!agent.inbox || agent.inbox.length === 0) {
+      return;
+    }
+    const said = agent.inbox.splice(0);
+    trace("user_message", { texts: said });
+    convo_say(msgs, anth, said.map((x) => "The user, while you were working: " + x).join("\n\n"));
+  }
+
   // With an API the page runs the loop: the brief's head (rules and the
-  // reference) is the system, cached; the rest, the first message. When a
-  // turn's own exchange outgrows the memory's budget, it starts again from
-  // the memory, where every step of it is logged.
+  // reference) is the system, cached; the rest, the first message.
   async function agent_api(cfg) {
     const tools = agent_tools();
     const lim = agent.lim || agent_limits(cfg);
+    const model = cfg.model || AI_PROVIDERS[cfg.provider].model || "";
+    const anth = cfg.provider === "anthropic";
     let sys = "";
     let msgs = [];
     const fresh = async (again) => {
@@ -1327,11 +1592,35 @@
       sys = brief.slice(0, cut);
       agent.api_seen = 0;
       msgs = [{ role: "user", content: brief.slice(cut) + (again ? "\n\n(Going on: what you did so far in this session is at the end of <chat>.)" : "") }];
+      agent.convo = { provider: cfg.provider, model, msgs };
     };
-    await fresh(false);
+    const kept = agent.convo && agent.convo.provider === cfg.provider && agent.convo.model === model
+      && agent.convo.msgs.length > 1 && agent.ended !== "";
+    if (kept) {
+      await agent_settle(cfg);
+      const brief = agent_brief(false);
+      sys = brief.slice(0, brief.indexOf("<chat>"));
+      msgs = agent.convo.msgs;
+      convo_close(msgs, anth);
+      convo_say(msgs, anth, convo_resumed());
+      agent.api_seen = 0;
+      agent_log({ kind: "context", text: t("ctx_kept", msgs.length, ctx_kb(ctx_bytes(msgs))) });
+      trace("context", { action: "kept", messages: msgs.length, bytes: ctx_bytes(msgs) });
+    } else {
+      if (agent.convo && agent.ended !== "") {
+        agent_log({ kind: "context", text: t("ctx_new_profile") });
+      }
+      await fresh(false);
+    }
     while (agent.running) {
-      if (new TextEncoder().encode(JSON.stringify(msgs.slice(1))).length > lim.memory) {
-        await fresh(true);
+      convo_inbox(msgs, anth);
+      if (ctx_bytes(msgs) > lim.context) {
+        if (!await ctx_compact(cfg, msgs, lim)) {
+          const before = ctx_bytes(msgs);
+          await fresh(true);
+          agent_log({ kind: "context", text: t("ctx_restarted", ctx_kb(before), ctx_kb(lim.context)) });
+          trace("context", { action: "restart", before, limit: lim.context });
+        }
       }
       const say = agent_log({ kind: "say", text: t("ai_thinking") });
       let reply;
@@ -1351,11 +1640,11 @@
         mem_log("agent", reply.text);
       }
       agent.last = reply.text || agent.last;
+      msgs.push(reply.said);
       if (reply.calls.length === 0) {
         agent_why(reply.text, reply.cut);
         return;
       }
-      msgs.push(reply.said);
       const rs = [];
       for (const c of reply.calls) {
         const tool = tools.find((tl) => tl.name === c.name);
@@ -1536,7 +1825,7 @@
     agent.task = task || (agent.mode === "holes" ? t("agent_task_holes", agent.holes.map((h) => "?" + h).join(", "))
       : t("agent_task_default"));
     agent_size();
-    Object.assign(agent, { done: false, steps: 0, log: [], last: "", notes: [], ended: "", note_draft: "",
+    Object.assign(agent, { done: false, steps: 0, log: [], last: "", notes: [], ended: "", note_draft: "", convo: null, inbox: [], told: [], tell_draft: "",
       before: work_snapshot(), proj: state.id, trace: [], t0: performance.now(), wall: Date.now() });
     agent.mem = await mem_open(state.id);
     trace("session", Object.assign({ started: new Date(agent.wall).toISOString(), bend: Core.VERSION + " (" + Core.COMMIT + ")",
@@ -2646,6 +2935,9 @@
     }
     const keepTask = $("#agent-task") ? $("#agent-task").value : agent.draft || "";
     const kept = journal_keep(pane);
+    // the message being typed to the agent keeps its caret across repaints
+    const tell_was = document.activeElement && document.activeElement.id === "agent-tell"
+      ? [document.activeElement.selectionStart, document.activeElement.selectionEnd] : null;
     pane.textContent = "";
     const box = el("div", { class: "agent" });
     if (!agent_ok() && !agent.running) {
@@ -2672,6 +2964,37 @@
           el("progress", { max: "100", value: String(pc), "aria-label": t("mem_shrinking", pc) })));
       }
       box.append(el("p", { class: "agent-task-shown", text: agent.task }));
+      // a word to the agent without stopping it: it reads it before its
+      // next request (with Claude in the viewer, its next call)
+      const tell = el("textarea", { id: "agent-tell", rows: "2", placeholder: t("agent_tell_ph"), "aria-label": t("agent_tell_ph") });
+      tell.value = agent.tell_draft || "";
+      tell.addEventListener("input", () => { agent.tell_draft = tell.value; });
+      const send = () => {
+        const text = tell.value.trim();
+        if (text === "") {
+          return;
+        }
+        agent.tell_draft = "";
+        agent_tell(text);
+      };
+      tell.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+          e.preventDefault();
+          send();
+        }
+      });
+      box.append(el("div", { class: "agent-tell" }, tell,
+        el("div", { class: "row" }, el("button", { class: "btn", type: "button", text: t("agent_tell_send"), onclick: send }),
+          el("small", { class: "dim", text: (agent.inbox || []).length ? t("agent_tell_waiting", agent.inbox.length) : t("agent_tell_hint") }))));
+      if (tell_was) {
+        requestAnimationFrame(() => {
+          const x = $("#agent-tell");
+          if (x) {
+            x.focus({ preventScroll: true });
+            x.setSelectionRange(tell_was[0], tell_was[1]);
+          }
+        });
+      }
     } else if (agent.done) {
       // a finished session: what it was asked, then what it did
       box.append(el("p", { class: "agent-task-shown", text: agent.task }));
@@ -3039,18 +3362,81 @@
     return form;
   }
 
+  const THINK_SYSTEM = "You summarise an AI agent's reasoning for the person watching it work. Answer with at most 6 bullet points, one line each, starting with \"- \": what it noticed, what it decided and why, what it will do next. No preamble, nothing else.";
+
+  function think_view(e) {
+    const box = el("div", { class: "ag-think" });
+    const whole = el("button", { class: "ag-think-tab" + (e.think_open ? " on" : ""), type: "button", text: t("ag_think_whole"),
+      "aria-expanded": String(!!e.think_open) });
+    const brief = el("button", { class: "ag-think-tab" + (e.sum_open ? " on" : ""), type: "button", text: t("ag_think_sum"),
+      "aria-expanded": String(!!e.sum_open) });
+    whole.addEventListener("click", () => {
+      e.think_open = !e.think_open;
+      agent_paint();
+    });
+    brief.addEventListener("click", () => {
+      e.sum_open = !e.sum_open;
+      if (e.sum_open && !e.think_sum && !e.sum_busy) {
+        think_sum(e);
+      }
+      agent_paint();
+    });
+    box.append(el("div", { class: "ag-think-head" }, whole, el("span", { class: "dim", text: " · " }), brief));
+    if (e.sum_open) {
+      box.append(e.think_sum ? el("ul", { class: "ag-think-sum" }, ...e.think_sum.map((x) => el("li", { text: x })))
+        : el("p", { class: "dim", text: e.sum_busy ? t("ag_think_summing") : e.sum_err || "" }));
+    }
+    if (e.think_open) {
+      box.append(el("div", { class: "ag-think-text", text: e.think }));
+    }
+    return box;
+  }
+
+  async function think_sum(e) {
+    const cfg = ai_cfg();
+    if (cfg === null) {
+      e.sum_err = t("ag_think_no_model");
+      return;
+    }
+    e.sum_busy = true;
+    e.sum_err = "";
+    agent_paint_soon();
+    try {
+      const got = String(await mem_asker(cfg, null)(THINK_SYSTEM, "The reasoning:\n\n" + e.think.slice(0, 60000)));
+      const points = got.split("\n").map((l) => l.replace(/^\s*(?:[-*•]|\d+[.)])\s*/, "").trim()).filter(Boolean).slice(0, 6);
+      if (points.length === 0) {
+        throw new Error("empty");
+      }
+      e.think_sum = points;
+    } catch (err) {
+      e.sum_err = t("ag_think_sum_failed");
+    }
+    e.sum_busy = false;
+    agent_paint_soon();
+  }
+
   function agent_entry(e) {
     if (e.kind === "say") {
       const say = el("div", { class: "ag-say", text: e.text.replace(/\n?STATUS:\s*\w+\s*$/i, "") || (e.think ? "" : "…") });
-      // the model's reasoning, as its summary, folded above what it said
-      return e.think ? el("div", {}, el("details", { class: "ag-think" }, el("summary", { text: t("ag_think") }),
-        el("div", { class: "ag-think-text", text: e.think })), say) : say;
+      // the model's reasoning above what it said: "Reasoning" opens it
+      // whole, "summary" opens its points (at most 6, written once by the
+      // memory's model, kept with the entry)
+      return e.think ? el("div", {}, think_view(e), say) : say;
     }
     if (e.kind === "note") {
       return el("div", { class: "ag-note", text: e.text });
     }
     if (e.kind === "err") {
       return el("div", { class: "ag-err", text: e.text });
+    }
+    // what happened to the context: kept, compacted (the summary one tap
+    // away), started again from the memory
+    if (e.kind === "context") {
+      const box = el("div", { class: "ag-note ag-ctx" }, el("span", { text: "⧉ " + e.text }));
+      if (e.summary) {
+        box.append(el("details", {}, el("summary", { text: t("ctx_show_summary") }), el("pre", { class: "ag-ctx-sum", text: e.summary })));
+      }
+      return box;
     }
     if (e.kind === "memory") {
       return el("div", { class: "ag-note ag-mem" + (e.state === "run" ? " run" : ""),

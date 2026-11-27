@@ -13,7 +13,15 @@ state = {"n": 0, "bodies": []}
 def anthropic(route):
     if route.request.method == "OPTIONS": return route.fulfill(status=204, headers=CORS)
     if route.request.method == "GET": return route.fulfill(status=200, content_type="application/json", headers=CORS, body=json.dumps({"data": [{"id": "claude-opus-5-5"}]}))
-    body = json.loads(route.request.post_data); state["bodies"].append(body); n = state["n"]; state["n"] += 1
+    body = json.loads(route.request.post_data)
+    # the memory's model, asked for a reasoning's points
+    sysx = body.get("system")
+    systext = sysx if isinstance(sysx, str) else json.dumps(sysx or "")
+    if "summarise an AI agent's reasoning" in systext:
+        state.setdefault("sums", []).append(body)
+        return route.fulfill(status=200, content_type="application/json", headers=CORS,
+            body=json.dumps({"content": [{"type": "text", "text": "- the base case is reflexive\n- fill it with {==}\n- 3\n- 4\n- 5\n- 6\n- 7"}]}))
+    state["bodies"].append(body); n = state["n"]; state["n"] += 1
     if n % 2 == 0: content = [THINK, {"type": "tool_use", "id": "t1", "name": "fill_hole", "input": {"hole": "base", "code": "{==}"}}]
     else: content = [{"type": "text", "text": "Filled.\nSTATUS: done"}]
     route.fulfill(status=200, content_type="application/json", headers=CORS, body=json.dumps({"content": content, "stop_reason": "tool_use" if n % 2 == 0 else "end_turn"}))
@@ -57,8 +65,15 @@ with sync_playwright() as p:
     sent_back = [c for m in bb["messages"] if m["role"] == "assistant" for c in m["content"]]
     check("2 the block goes back unchanged:", sent_back[0] == THINK)
     check("2 the exchange cached too:", a.get("cache_control") == {"type": "ephemeral"}, a["system"][0].get("cache_control") == {"type": "ephemeral"})
-    page.locator(".ag-think > summary").first.click(); time.sleep(0.2)
-    check("2 journal shows the summary:", "reflexive" in page.inner_text(".ag-think-text"))
+    # "Reasoning" opens the block whole; "summary" its points, asked once
+    page.locator(".ag-think-tab", has_text="Reasoning").first.click(); time.sleep(0.2)
+    check("2 Reasoning opens the block whole:", "Nat.add(0n, 0n) reduces to 0n" in page.inner_text(".ag-think-text"))
+    page.locator(".ag-think-tab", has_text="summary").first.click(); time.sleep(1.0)
+    pts = page.locator(".ag-think-sum li").all_inner_texts()
+    check("2 summary: its points, at most 6, by the memory's model:", pts[:2] == ["the base case is reflexive", "fill it with {==}"], len(pts) == 6, len(state.get("sums", [])) == 1, pts)
+    page.locator(".ag-think-tab", has_text="summary").first.click(); time.sleep(0.2)
+    page.locator(".ag-think-tab", has_text="summary").first.click(); time.sleep(0.5)
+    check("2 asked once:", len(state.get("sums", [])) == 1, page.locator(".ag-think-sum li").count() == 6)
     for e in errs: print("!!", e[:200])
     assert not errs
     b.close()

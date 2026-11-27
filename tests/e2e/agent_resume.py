@@ -63,11 +63,18 @@ with sync_playwright() as p:
     print("2 verdicts:", page.locator(".ag-verdict").all_inner_texts())
     print("2 notes:", [x for x in page.locator(".ag-note").all_inner_texts() if "resumed" in x or "»" in x])
     second = bodies[2]
-    user = second["messages"][0]["content"]
+    # the conversation kept: the first leg's messages, then why it stopped
+    # and the user's words, in its last message; the rules and tools anew
+    kept = len(second["messages"]) > 1 and second["messages"][1]["role"] == "assistant"
+    print("3 conversation kept:", kept, [m["role"] for m in second["messages"]])
+    assert kept
+    lastm = second["messages"][-1]["content"]
+    user = lastm if isinstance(lastm, str) else "\n".join(c.get("text", "") for c in lastm if c.get("type") == "text")
     system = second["system"][0]["text"]
     tools = [t["name"] for t in second["tools"]]
     print("3 brief:", "<resumed>" in user, "error" in user.split("<resumed>")[1][:200], "just fill ?base" in user, "| so far:", "<so_far>" in user)
-    print("3 rules now:", "You may only fill these holes, with fill_hole: ?base" in system, "must close its goal" in system, "| edit_file offered:", "edit_file" in tools)
+    print("3 rights now:", "You may only fill these holes, with fill_hole: ?base" in user, "must close its goal" in user, "| edit_file offered:", "edit_file" in tools)
+    assert "You may only fill these holes, with fill_hole: ?base" in user and "must close its goal" in user
     assert "<resumed>" in user and "just fill ?base" in user and "edit_file" not in tools
     print("4 journal:", [x.replace("\n", " ") for x in page.locator(".ag-tool .ag-head").all_inner_texts()])
     page.locator(".agent-modes .chip", has_text="Conversation").click(); time.sleep(0.3)

@@ -729,7 +729,11 @@ type), the goal after `⊢`, and a toolbar.
   kind, line, and for a constructor its type; Base past 300 symbols answers
   with its namespaces and asks for a prefix), `signature` (a name's type alone,
   as the signature bar writes it, with the law of a def proven by one),
-  `lookup` (the whole declaration as the signature bar resolves it), `zoom`
+  `lookup` (the whole declaration as the signature bar resolves it), `grep`
+  (lines of the project's files, a file or folder, Base, a hub module, or
+  all of them, holding a text or a regular expression, as `file:line:`,
+  with context lines; 200 lines at most: the agent had been searching code
+  with the memory's `search`), `zoom`
   and `search` (its memory, below), `guide` (a
   section by title; titles are found outside code fences, since Bend comments
   start with `#` too), `list_holes` (every `?name` in the project: file, line,
@@ -840,9 +844,37 @@ type), the goal after `⊢`, and a toolbar.
   writes only what it adds (1.25x); a turn of one request pays that
   premium for nothing, a pause past 5 minutes rewrites once; OpenAI `tool_calls`/`tool`):
   the rules and the full guide are the system, the view and the rest the
-  first message; when a turn's own exchange outgrows the memory's budget,
-  the conversation starts again from the memory, where every step of it is
-  logged.
+  first message.
+- **The context** (with an API: the turn's own exchange, the brief then
+  the replies and the tools' answers) has its own limit, apart from the
+  memory's (*Agent limits*, `context`, bytes of JSON, 400 KB by default):
+  the memory is the long term, the context the work at hand, and a
+  conversation is no longer thrown away because the memory's budget is
+  small. Past its limit it is compacted (`ctx_compact`), in steps: the old
+  tools' answers (all but the last 8 messages) cut to their start, since
+  each is whole in the memory; if that leaves more than 70% of the limit,
+  the oldest steps, up to the first reply from which the rest fits in 60%
+  (the last round kept whatever its size), summarised by the memory's
+  model (`CTX_SYSTEM`, 40 lines at most, an earlier summary folded in)
+  into a `<so_far>` section of the first message; only if no summary comes
+  does the conversation start again from the memory. Each step is a
+  journal entry (⧉: what was cut or summarised, the sizes before and
+  after, the summary one tap away) and a `context` trace event. A session
+  taken up again, by hand or by the page itself (*Relaunch by itself*),
+  keeps its conversation when the profile and the model are the same: the
+  calls a stop left unanswered get "not run", and a message says why it
+  stopped, with the `<state>`, `<rights>` and `<resumed>` sections as they
+  stand now (the rules and tools are rebuilt from the new settings); the
+  journal says "Context kept". A new profile or model, or a reload,
+  starts from the memory, and says so.
+- **A word while it works.** During a session the tab has a box under the
+  task (Ctrl+Enter sends): the text goes to the journal and the memory at
+  once, and into the conversation before the next request (`agent_tell`,
+  `convo_inbox`: added to the last user message, after the tools'
+  answers), never cutting a request or a tool short; with Claude in the
+  viewer, into the next call's brief (`<user_said>`, every word of the
+  session, which a restart from the memory keeps too). The box keeps its
+  draft and caret across repaints.
 - **Limits.** Each AI profile has its own (AI settings, *Agent limits*;
   empty is the default, `AGENT_LIMITS` in `agent.js`): the project quoted
   (`files`), one tool result (`result`), the memory's view (`memory`, bytes:
@@ -946,7 +978,11 @@ type), the goal after `⊢`, and a toolbar.
   without scrolling. Each entry has its time of day (to the second) and the
   agent's text, each tool call with its target, ✓/✗ and the verdict after
   it, the diff of each write, the output of each run or eval, or a batch of
-  memory summaries. Each trace event names the entry it belongs to (`j`),
+  memory summaries. A reply's reasoning shows above its text as
+  *Reasoning · summary*: *Reasoning* opens the block whole, *summary* its
+  points, at most 6, written by the memory's model the first time they are
+  asked for (`THINK_SYSTEM`) and kept with the entry (so in the past
+  session too). Each trace event names the entry it belongs to (`j`),
   so an entry unfolds (*▸ n events*) into its own part of the conversation:
   a reply into its call (the prompt) and its answer, a tool into its exact
   input and result, a summary batch into each summary written. Unfolded
@@ -1101,9 +1137,11 @@ type), the goal after `⊢`, and a toolbar.
   `agent_memory_tabs` (a session in
   each of two tabs on one project, both kept, after a reload too; a session
   whose memory read failed, merged after what was stored), `agent_memory_api` (Haiku summaries with a simulated
-  Anthropic server, a long turn started again from the memory),
+  Anthropic server: a long turn's context compacted into `<so_far>`, the
+  next session's memory merged),
   `agent_reasoning` (adaptive thinking and effort in the request, the
-  thinking block sent back unchanged, its summary in the journal),
+  thinking block sent back unchanged; in the journal *Reasoning* whole,
+  *summary* in 6 points asked once of the memory's model),
   `agent_keep` (the sound's length and level, the media session during a
   session, off by default, stopped at the end; the Session tab first, its
   settings readable during the session),
@@ -1114,6 +1152,10 @@ type), the goal after `⊢`, and a toolbar.
   `agent_attach` (a document uploaded, a binary refused, edited, attached
   whole to the prompt, locked to the agent then unlocked and written,
   uploaded from the agent's form; in the zip, in git, imported back),
+  `agent_context` (a JS stand-in server: the context past its own limit
+  summarised into `<so_far>` and said in the journal, a word sent while a
+  request is held reaching the next one, grep, a relaunch keeping the
+  conversation),
   `agent_journal` (a reply without STATUS relaunched, the journal newest
   first with times, an entry unfolded into its events, the conversation's
   link back, the user's instructions in the prompt),
